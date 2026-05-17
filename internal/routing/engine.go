@@ -304,7 +304,7 @@ func (e *Engine) haversineRoute(startLat, startLng, endLat, endLng float64, mode
 	duration := (dist / spd) * 60
 	start := Point{Lat: startLat, Lng: startLng}
 	end := Point{Lat: endLat, Lng: endLng}
-	points := greatCircleArc(start, end, 12)
+	points := flightArc(start, end, 12)
 	return &Route{
 		Distance: utils.Round(dist, 3),
 		Duration: utils.Round(duration, 2),
@@ -313,9 +313,10 @@ func (e *Engine) haversineRoute(startLat, startLng, endLat, endLng float64, mode
 	}
 }
 
-// airplaneRoute: great-circle arc at cruising speed.
-// Points are interpolated along the spherical geodesic (SLERP) so the path
-// curves naturally over the globe, matching how a plane actually flies.
+// airplaneRoute: quadratic Bézier arc at cruising speed.
+// A control point is placed 25% of the total distance above the geographic
+// midpoint (perpendicular to the start→end bearing), producing the classic
+// curved flight-path shape visible on airline booking sites.
 func (e *Engine) airplaneRoute(startLat, startLng, endLat, endLng float64) *Route {
 	const cruiseSpeedKmH = 800.0
 	dist := utils.Haversine(startLat, startLng, endLat, endLng)
@@ -323,7 +324,7 @@ func (e *Engine) airplaneRoute(startLat, startLng, endLat, endLng float64) *Rout
 	duration := (dist/cruiseSpeedKmH)*60 + 30
 	start := Point{Lat: startLat, Lng: startLng}
 	end := Point{Lat: endLat, Lng: endLng}
-	points := greatCircleArc(start, end, 50)
+	points := flightArc(start, end, 50)
 	return &Route{
 		Distance: utils.Round(dist, 3),
 		Duration: utils.Round(duration, 2),
@@ -342,55 +343,57 @@ func (e *Engine) fallbackSpeed(mode TransportMode) float64 {
 	return 40
 }
 
-// greatCircleArc returns n+2 points interpolated along the great-circle arc
-// between start and end using spherical linear interpolation (SLERP).
-// For short distances this is indistinguishable from a straight line; for
-// long distances it curves naturally over the globe.
-func greatCircleArc(start, end Point, n int) []Point {
-	toRad := math.Pi / 180
-	toDeg := 180 / math.Pi
+// flightArc returns n+2 points along a quadratic Bézier arc between start and end.
+//
+// A control point is placed perpendicular to the start→end bearing at the
+// geographic midpoint, offset by 25% of the total distance. This produces a
+// visually obvious curved arc at any distance — identical to the flight-path
+// arcs shown on Google Flights and other airline booking services.
+func flightArc(start, end Point, n int) []Point {
+	const toRad = math.Pi / 180
+	const earthRadiusKm = 6371.0
 
-	lat1 := start.Lat * toRad
-	lng1 := start.Lng * toRad
-	lat2 := end.Lat * toRad
-	lng2 := end.Lng * toRad
+	// Geographic midpoint.
+	midLat := (start.Lat + end.Lat) / 2
+	midLng := (start.Lng + end.Lng) / 2
 
-	// Convert to 3-D unit vectors on the unit sphere.
-	x1 := math.Cos(lat1) * math.Cos(lng1)
-	y1 := math.Cos(lat1) * math.Sin(lng1)
-	z1 := math.Sin(lat1)
+	// Initial bearing from start to end (radians).
+	lat1r := start.Lat * toRad
+	lat2r := end.Lat * toRad
+	dLng := (end.Lng - start.Lng) * toRad
+	y := math.Sin(dLng) * math.Cos(lat2r)
+	x := math.Cos(lat1r)*math.Sin(lat2r) - math.Sin(lat1r)*math.Cos(lat2r)*math.Cos(dLng)
+	bearing := math.Atan2(y, x)
 
-	x2 := math.Cos(lat2) * math.Cos(lng2)
-	y2 := math.Cos(lat2) * math.Sin(lng2)
-	z2 := math.Sin(lat2)
+	// Perpendicular bearing: 90° to the left of the travel direction.
+	perpBearing := bearing - math.Pi/2
 
-	dot := math.Max(-1, math.Min(1, x1*x2+y1*y2+z1*z2))
-	omega := math.Acos(dot)
+	// Lift the control point 25% of the total distance above the midpoint.
+	dist := utils.Haversine(start.Lat, start.Lng, end.Lat, end.Lng)
+	liftKm := dist * 0.25
+	d := liftKm / earthRadiusKm
 
+	midLatR := midLat * toRad
+	midLngR := midLng * toRad
+	ctrlLatR := math.Asin(math.Sin(midLatR)*math.Cos(d) +
+		math.Cos(midLatR)*math.Sin(d)*math.Cos(perpBearing))
+	ctrlLngR := midLngR + math.Atan2(
+		math.Sin(perpBearing)*math.Sin(d)*math.Cos(midLatR),
+		math.Cos(d)-math.Sin(midLatR)*math.Sin(ctrlLatR),
+	)
+	ctrl := Point{Lat: ctrlLatR / toRad, Lng: ctrlLngR / toRad}
+
+	// Quadratic Bézier: B(t) = (1-t)²·P0 + 2(1-t)t·P1 + t²·P2
 	pts := make([]Point, n+2)
 	pts[0] = start
 	pts[n+1] = end
-
-	if omega < 1e-10 {
-		for i := 1; i <= n; i++ {
-			pts[i] = start
-		}
-		return pts
-	}
-
-	sinOmega := math.Sin(omega)
 	for i := 1; i <= n; i++ {
 		t := float64(i) / float64(n+1)
-		a := math.Sin((1-t)*omega) / sinOmega
-		b := math.Sin(t*omega) / sinOmega
-
-		x := a*x1 + b*x2
-		y := a*y1 + b*y2
-		z := a*z1 + b*z2
-
-		lat := math.Atan2(z, math.Sqrt(x*x+y*y)) * toDeg
-		lng := math.Atan2(y, x) * toDeg
-		pts[i] = Point{Lat: lat, Lng: lng}
+		s := 1 - t
+		pts[i] = Point{
+			Lat: s*s*start.Lat + 2*s*t*ctrl.Lat + t*t*end.Lat,
+			Lng: s*s*start.Lng + 2*s*t*ctrl.Lng + t*t*end.Lng,
+		}
 	}
 	return pts
 }
