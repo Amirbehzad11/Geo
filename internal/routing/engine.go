@@ -304,7 +304,7 @@ func (e *Engine) haversineRoute(startLat, startLng, endLat, endLng float64, mode
 	duration := (dist / spd) * 60
 	start := Point{Lat: startLat, Lng: startLng}
 	end := Point{Lat: endLat, Lng: endLng}
-	points := interpolate(start, end, 12)
+	points := greatCircleArc(start, end, 12)
 	return &Route{
 		Distance: utils.Round(dist, 3),
 		Duration: utils.Round(duration, 2),
@@ -313,7 +313,9 @@ func (e *Engine) haversineRoute(startLat, startLng, endLat, endLng float64, mode
 	}
 }
 
-// airplaneRoute: straight-line at cruising speed, minimal waypoints.
+// airplaneRoute: great-circle arc at cruising speed.
+// Points are interpolated along the spherical geodesic (SLERP) so the path
+// curves naturally over the globe, matching how a plane actually flies.
 func (e *Engine) airplaneRoute(startLat, startLng, endLat, endLng float64) *Route {
 	const cruiseSpeedKmH = 800.0
 	dist := utils.Haversine(startLat, startLng, endLat, endLng)
@@ -321,7 +323,7 @@ func (e *Engine) airplaneRoute(startLat, startLng, endLat, endLng float64) *Rout
 	duration := (dist/cruiseSpeedKmH)*60 + 30
 	start := Point{Lat: startLat, Lng: startLng}
 	end := Point{Lat: endLat, Lng: endLng}
-	points := []Point{start, end}
+	points := greatCircleArc(start, end, 50)
 	return &Route{
 		Distance: utils.Round(dist, 3),
 		Duration: utils.Round(duration, 2),
@@ -340,17 +342,55 @@ func (e *Engine) fallbackSpeed(mode TransportMode) float64 {
 	return 40
 }
 
-// interpolate returns n+2 evenly spaced points between start and end.
-func interpolate(start, end Point, n int) []Point {
+// greatCircleArc returns n+2 points interpolated along the great-circle arc
+// between start and end using spherical linear interpolation (SLERP).
+// For short distances this is indistinguishable from a straight line; for
+// long distances it curves naturally over the globe.
+func greatCircleArc(start, end Point, n int) []Point {
+	toRad := math.Pi / 180
+	toDeg := 180 / math.Pi
+
+	lat1 := start.Lat * toRad
+	lng1 := start.Lng * toRad
+	lat2 := end.Lat * toRad
+	lng2 := end.Lng * toRad
+
+	// Convert to 3-D unit vectors on the unit sphere.
+	x1 := math.Cos(lat1) * math.Cos(lng1)
+	y1 := math.Cos(lat1) * math.Sin(lng1)
+	z1 := math.Sin(lat1)
+
+	x2 := math.Cos(lat2) * math.Cos(lng2)
+	y2 := math.Cos(lat2) * math.Sin(lng2)
+	z2 := math.Sin(lat2)
+
+	dot := math.Max(-1, math.Min(1, x1*x2+y1*y2+z1*z2))
+	omega := math.Acos(dot)
+
 	pts := make([]Point, n+2)
 	pts[0] = start
 	pts[n+1] = end
+
+	if omega < 1e-10 {
+		for i := 1; i <= n; i++ {
+			pts[i] = start
+		}
+		return pts
+	}
+
+	sinOmega := math.Sin(omega)
 	for i := 1; i <= n; i++ {
 		t := float64(i) / float64(n+1)
-		pts[i] = Point{
-			Lat: start.Lat + t*(end.Lat-start.Lat),
-			Lng: start.Lng + t*(end.Lng-start.Lng),
-		}
+		a := math.Sin((1-t)*omega) / sinOmega
+		b := math.Sin(t*omega) / sinOmega
+
+		x := a*x1 + b*x2
+		y := a*y1 + b*y2
+		z := a*z1 + b*z2
+
+		lat := math.Atan2(z, math.Sqrt(x*x+y*y)) * toDeg
+		lng := math.Atan2(y, x) * toDeg
+		pts[i] = Point{Lat: lat, Lng: lng}
 	}
 	return pts
 }
