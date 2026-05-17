@@ -23,10 +23,14 @@ type RouteResponse struct {
 }
 
 type RouteOption struct {
-	ID          int     `json:"id"`
-	Mode        string  `json:"mode"`
-	IsPrimary   bool    `json:"is_primary"`
-	DistanceKm  float64 `json:"distance_km"`
-	DurationMin float64 `json:"duration_min"`
-	Polyline    string  `json:"polyline"`
+	ID          int         `json:"id"`
+	Mode        string      `json:"mode"`
+	IsPrimary   bool        `json:"is_primary"`
+	DistanceKm  float64     `json:"distance_km"`
+	DurationMin float64     `json:"duration_min"`
+	Polyline    string      `json:"polyline"`
+	// Path contains the full 3-D route geometry as [lat, lng, altMetres] tuples.
+	// For ground routes altMetres is 0; for airplane mode it follows a sinusoidal
+	// profile peaking at ~11 000 m (35 000 ft) at the midpoint.
+	Path        [][3]float64 `json:"path"`
 }
