@@ -346,9 +346,9 @@ func (e *Engine) fallbackSpeed(mode TransportMode) float64 {
 // flightArc returns n+2 points along a quadratic Bézier arc between start and end.
 //
 // A control point is placed perpendicular to the start→end bearing at the
-// geographic midpoint, offset by 25% of the total distance. This produces a
-// visually obvious curved arc at any distance — identical to the flight-path
-// arcs shown on Google Flights and other airline booking services.
+// geographic midpoint, offset by 25% of the total distance. The perpendicular
+// direction is chosen so the arc always curves toward the nearest pole —
+// producing the classic upward-curving flight-path shape.
 func flightArc(start, end Point, n int) []Point {
 	const toRad = math.Pi / 180
 	const earthRadiusKm = 6371.0
@@ -365,16 +365,29 @@ func flightArc(start, end Point, n int) []Point {
 	x := math.Cos(lat1r)*math.Sin(lat2r) - math.Sin(lat1r)*math.Cos(lat2r)*math.Cos(dLng)
 	bearing := math.Atan2(y, x)
 
-	// Perpendicular bearing: 90° to the left of the travel direction.
-	perpBearing := bearing - math.Pi/2
-
-	// Lift the control point 25% of the total distance above the midpoint.
+	// Lift the control point 25% of the total distance from the midpoint.
 	dist := utils.Haversine(start.Lat, start.Lng, end.Lat, end.Lng)
 	liftKm := dist * 0.25
 	d := liftKm / earthRadiusKm
 
 	midLatR := midLat * toRad
 	midLngR := midLng * toRad
+
+	// destLat returns the latitude (degrees) reached by moving from the midpoint
+	// by distance d in the given bearing.
+	destLat := func(perp float64) float64 {
+		return math.Asin(math.Sin(midLatR)*math.Cos(d)+math.Cos(midLatR)*math.Sin(d)*math.Cos(perp)) / toRad
+	}
+
+	// Of the two perpendicular directions, pick the one whose destination is
+	// further from the equator — this always curves toward the nearest pole.
+	perp1 := bearing - math.Pi/2
+	perp2 := bearing + math.Pi/2
+	perpBearing := perp1
+	if math.Abs(destLat(perp2)) > math.Abs(destLat(perp1)) {
+		perpBearing = perp2
+	}
+
 	ctrlLatR := math.Asin(math.Sin(midLatR)*math.Cos(d) +
 		math.Cos(midLatR)*math.Sin(d)*math.Cos(perpBearing))
 	ctrlLngR := midLngR + math.Atan2(
