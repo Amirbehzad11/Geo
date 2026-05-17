@@ -1,0 +1,24 @@
+/.gocache
+/data
+/.claude
+/.gotmp
+osm2graph.exe
+osm2graph_legacy.exe
+osm2postgis.exe
+geo-service-new.exe
+isfahan_roads.osm
+
+# Build outputs
+geo-service
+geo-service.exe
+osm2postgis
+loadtest
+loadtest.exe
+
+# Environment files
+.env
+.env.local
+
+# Editor swap files
+*.swp
+*.swo

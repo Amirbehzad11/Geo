@@ -1,0 +1,23 @@
+run:
+  timeout: 3m
+
+linters-settings:
+  errcheck:
+    check-blank: false
+
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+    - gofmt
+
+issues:
+  exclude-rules:
+    - path: "cmd/(loadtest|osm2postgis)"
+      linters: [errcheck, unused]

@@ -1,0 +1,10 @@
+.git
+.idea
+.gocache
+.gotmp
+*.test.exe
+data/*.osm.pbf
+data/*.osm
+isfahan_roads.osm
+osm2graph*.exe
+osm2postgis.exe

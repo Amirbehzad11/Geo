@@ -1,0 +1,87 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - geo_net
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+        --appendonly yes
+        --maxmemory 2gb
+        --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    restart: unless-stopped
+    networks:
+      - geo_net
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: geo
+      POSTGRES_PASSWORD: geo_secret
+      POSTGRES_DB: geodb
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geo -d geodb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  geo-service:
+    build: .
+    restart: unless-stopped
+    networks:
+      - geo_net
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      GIN_MODE: "release"
+
+      # Redis
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+
+      # PostGIS (comment out to disable)
+      POSTGRES_DSN: "host=postgres port=5432 user=geo password=geo_secret dbname=geodb sslmode=disable"
+
+      # Routing
+      AVG_SPEED_KMH: "40"
+      ROAD_GRAPH_LOAD_TIMEOUT_SEC: "300"
+
+      # GPS processing
+      GPS_RATE_LIMIT_MS: "3000"
+      DEVIATION_THRESH_KM: "0.05"
+
+      # Batch writer
+      BATCH_SIZE: "500"
+      BATCH_FLUSH_SEC: "2"
+
+      # Public API settings
+      CORS_ALLOWED_ORIGINS: "*"
+      API_KEY_ENABLED: "false"
+      API_KEY: ""
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+networks:
+  geo_net:
+    driver: bridge
+
+volumes:
+  redis_data:
+  pg_data:

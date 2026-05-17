@@ -1,0 +1,286 @@
+basePath: /
+definitions:
+  geo-service_internal_model.GPSUpdate:
+    properties:
+      lat:
+        type: number
+      lng:
+        type: number
+      timestamp:
+        description: Unix seconds
+        type: integer
+      trip_id:
+        type: integer
+    type: object
+  geo-service_internal_model.LocationState:
+    properties:
+      deviation_km:
+        description: distance from planned route
+        type: number
+      lat:
+        type: number
+      lng:
+        type: number
+      speed_kmh:
+        type: number
+      timestamp:
+        type: integer
+      trip_id:
+        type: integer
+    type: object
+  geo-service_internal_model.RouteOption:
+    properties:
+      distance_km:
+        type: number
+      duration_min:
+        type: number
+      id:
+        type: integer
+      is_primary:
+        type: boolean
+      mode:
+        type: string
+      polyline:
+        type: string
+    type: object
+  geo-service_internal_model.RouteRequest:
+    properties:
+      alternatives:
+        description: requested route count, clamped server-side
+        type: integer
+      end_lat:
+        type: number
+      end_lng:
+        type: number
+      mode:
+        description: 'car | motorcycle | bus | walking | airplane (default: car)'
+        type: string
+      start_lat:
+        type: number
+      start_lng:
+        type: number
+      trip_id:
+        description: optional
+        type: integer
+      vehicle_type:
+        description: alias for mode, useful for Laravel payloads
+        type: string
+    type: object
+  geo-service_internal_model.RouteResponse:
+    properties:
+      distance:
+        description: Backward-compatible primary route fields.
+        type: number
+      duration:
+        description: minutes
+        type: number
+      mode:
+        type: string
+      polyline:
+        description: Google Encoded Polyline
+        type: string
+      primary:
+        $ref: '#/definitions/geo-service_internal_model.RouteOption'
+      routes:
+        items:
+          $ref: '#/definitions/geo-service_internal_model.RouteOption'
+        type: array
+    type: object
+  geo-service_internal_response.ErrorDetail:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  geo-service_internal_response.Failure:
+    properties:
+      error:
+        $ref: '#/definitions/geo-service_internal_response.ErrorDetail'
+      success:
+        type: boolean
+    type: object
+  geo-service_internal_response.Success:
+    properties:
+      data: {}
+      success:
+        type: boolean
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: GitHub Issues
+    url: https://github.com/Amirbehzad11/geo-service/issues
+  description: A production-ready geospatial routing microservice with a custom A*
+    + Yen's k-shortest-paths algorithm, live GPS tracking, WebSocket event delivery,
+    and a PostGIS-backed OSM road graph.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  title: geo-service
+  version: "1.0"
+paths:
+  /gps/trip/{id}/location:
+    get:
+      description: Returns the most recent GPS state for a trip, read from Redis.
+        State is cached for 24 hours after the last update.
+      parameters:
+      - description: Trip ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Latest location state
+          schema:
+            allOf:
+            - $ref: '#/definitions/geo-service_internal_response.Success'
+            - properties:
+                data:
+                  $ref: '#/definitions/geo-service_internal_model.LocationState'
+              type: object
+        "400":
+          description: Invalid trip ID
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "404":
+          description: No location found for this trip
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+      summary: Get latest trip location
+      tags:
+      - gps
+  /gps/update:
+    post:
+      consumes:
+      - application/json
+      description: Accepts a raw GPS position for an active trip. Applies rate limiting,
+        EMA smoothing (α=0.75), speed computation, and cross-track deviation detection
+        against the planned route. Writes state to Redis and broadcasts events via
+        Redis Pub/Sub.
+      parameters:
+      - description: GPS update payload
+        in: body
+        name: update
+        required: true
+        schema:
+          $ref: '#/definitions/geo-service_internal_model.GPSUpdate'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Processed location state
+          schema:
+            allOf:
+            - $ref: '#/definitions/geo-service_internal_response.Success'
+            - properties:
+                data:
+                  $ref: '#/definitions/geo-service_internal_model.LocationState'
+              type: object
+        "400":
+          description: Malformed JSON body
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "422":
+          description: Validation error
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "429":
+          description: Rate limited — update received too soon
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "500":
+          description: Internal processing error
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+      summary: Process a GPS update
+      tags:
+      - gps
+  /health:
+    get:
+      description: Returns the service health status and the reachability of each
+        downstream dependency. Returns HTTP 503 when any required dependency is unreachable.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: All dependencies healthy
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Success'
+        "503":
+          description: One or more dependencies unreachable
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+      summary: Health check
+      tags:
+      - system
+  /route:
+    post:
+      consumes:
+      - application/json
+      description: Computes the fastest route between two coordinates using A* search
+        over the OSM road graph, with Yen's k-shortest-paths algorithm for alternative
+        routes. Falls back to Haversine straight-line when the endpoints are outside
+        graph coverage.
+      parameters:
+      - description: Route request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/geo-service_internal_model.RouteRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Route calculated successfully
+          schema:
+            allOf:
+            - $ref: '#/definitions/geo-service_internal_response.Success'
+            - properties:
+                data:
+                  $ref: '#/definitions/geo-service_internal_model.RouteResponse'
+              type: object
+        "400":
+          description: Malformed JSON body
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "422":
+          description: Validation error (invalid coordinates or transport mode)
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "500":
+          description: Internal routing error
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+      summary: Calculate a route
+      tags:
+      - routing
+  /ws/trip/{id}:
+    get:
+      description: Upgrades the connection to WebSocket and streams real-time `location.updated`
+        and `deviation.detected` events for the specified trip via Redis Pub/Sub.
+        Send any message to keep the connection alive.
+      parameters:
+      - description: Trip ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "101":
+          description: Switching Protocols — WebSocket upgrade successful
+        "400":
+          description: Missing or invalid trip ID
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+      summary: WebSocket — live trip events
+      tags:
+      - websocket
+schemes:
+- http
+- https
+swagger: "2.0"
