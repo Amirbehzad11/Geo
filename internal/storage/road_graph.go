@@ -121,18 +121,44 @@ func (p *Postgres) loadRoadGraphTable(ctx context.Context, g *routing.Graph, see
 			BusAllowed:        bus,
 			FootAllowed:       foot,
 		}
-		g.AddEdge(fromID, edge)
-		edgeCount++
-
-		if bidirectional {
-			reverse := edge
-			reverse.To = fromID
-			g.AddEdge(toID, reverse)
-			edgeCount++
-		}
+		edgeCount += addRoadGraphEdges(g, fromID, toID, edge, bidirectional)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("iterate %s: %w", table, err)
 	}
 	return edgeCount, nil
+}
+
+func addRoadGraphEdges(g *routing.Graph, fromID, toID int64, edge routing.Edge, bidirectional bool) int {
+	g.AddEdge(fromID, edge)
+	count := 1
+
+	if bidirectional {
+		reverse := edge
+		reverse.To = fromID
+		g.AddEdge(toID, reverse)
+		return count + 1
+	}
+
+	if edge.FootAllowed && pedestriansMayIgnoreVehicleOneway(edge.HighwayType) {
+		reverse := edge
+		reverse.To = fromID
+		reverse.CarAllowed = false
+		reverse.MotorcycleAllowed = false
+		reverse.BusAllowed = false
+		reverse.FootAllowed = true
+		g.AddEdge(toID, reverse)
+		count++
+	}
+
+	return count
+}
+
+func pedestriansMayIgnoreVehicleOneway(highway string) bool {
+	switch highway {
+	case "footway", "pedestrian", "path", "steps", "corridor", "platform", "sidewalk", "crossing":
+		return false
+	default:
+		return true
+	}
 }

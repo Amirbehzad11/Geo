@@ -9,11 +9,11 @@ geo-service-new.exe
 isfahan_roads.osm
 
 # Build outputs
-geo-service
-geo-service.exe
-osm2postgis
-loadtest
-loadtest.exe
+/geo-service
+/geo-service.exe
+/osm2postgis
+/loadtest
+/loadtest.exe
 
 # Environment files
 .env

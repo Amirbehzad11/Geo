@@ -98,6 +98,10 @@ var highwaySpeed = map[string]float64{
 	"footway":        5,
 	"path":           5,
 	"steps":          3,
+	"corridor":       5,
+	"platform":       5,
+	"sidewalk":       5,
+	"crossing":       5,
 }
 
 func main() {
@@ -638,7 +642,10 @@ type accessFlags struct {
 }
 
 func accessForWay(tags map[string]string, highway string) accessFlags {
-	pedestrianOnly := highway == "footway" || highway == "pedestrian" || highway == "path" || highway == "steps"
+	pedestrianOnly := highway == "footway" || highway == "pedestrian" ||
+		highway == "path" || highway == "steps" ||
+		highway == "corridor" || highway == "platform" ||
+		highway == "sidewalk" || highway == "crossing"
 	flags := accessFlags{
 		car:        !pedestrianOnly,
 		motorcycle: !pedestrianOnly,
@@ -653,7 +660,13 @@ func accessForWay(tags map[string]string, highway string) accessFlags {
 			highway != "trunk" && highway != "trunk_link",
 	}
 
-	if isNo(tags["access"]) || isNo(tags["vehicle"]) {
+	if isNo(tags["access"]) {
+		flags.car = false
+		flags.motorcycle = false
+		flags.bus = false
+		flags.foot = false
+	}
+	if isNo(tags["vehicle"]) {
 		flags.car = false
 		flags.motorcycle = false
 		flags.bus = false
