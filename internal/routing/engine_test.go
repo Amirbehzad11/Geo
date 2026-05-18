@@ -183,7 +183,7 @@ func TestCalculate_Car_UsesGraph(t *testing.T) {
 }
 
 // TestCalculate_Airplane_AlwaysFlightArc ensures airplane mode always returns
-// a curved Bézier arc with 3D altitude regardless of graph availability.
+// a curved Bézier arc regardless of graph availability.
 func TestCalculate_Airplane_AlwaysFlightArc(t *testing.T) {
 	g := NewGraph()
 	addNode(g, 1, 35.0, 51.0)
@@ -199,16 +199,6 @@ func TestCalculate_Airplane_AlwaysFlightArc(t *testing.T) {
 	}
 	if route.Points[0].Lat != 35.0 || route.Points[len(route.Points)-1].Lat != 36.0 {
 		t.Fatalf("airplane route endpoints wrong: %v", route.Points)
-	}
-	// Peak altitude should reach ~11 000 m at the midpoint.
-	maxAlt := 0.0
-	for _, p := range route.Points {
-		if p.Alt > maxAlt {
-			maxAlt = p.Alt
-		}
-	}
-	if maxAlt < 10000 {
-		t.Fatalf("expected peak altitude >= 10 000 m, got %.0f m", maxAlt)
 	}
 	// Duration includes fixed 30 min takeoff/landing overhead.
 	if route.Duration < 30 {

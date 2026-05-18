@@ -21,12 +21,10 @@ const (
 	ModeAirplane   TransportMode = "airplane"
 )
 
-// Point is a geographic coordinate with an optional altitude.
-// Alt is in metres above sea level; 0 for ground-level routes.
+// Point is a geographic coordinate used for polyline encoding.
 type Point struct {
 	Lat float64
 	Lng float64
-	Alt float64
 }
 
 // Route is the result of a route calculation.
@@ -306,7 +304,7 @@ func (e *Engine) haversineRoute(startLat, startLng, endLat, endLng float64, mode
 	duration := (dist / spd) * 60
 	start := Point{Lat: startLat, Lng: startLng}
 	end := Point{Lat: endLat, Lng: endLng}
-	points := flightArc(start, end, 12, 0)
+	points := flightArc(start, end, 12)
 	return &Route{
 		Distance: utils.Round(dist, 3),
 		Duration: utils.Round(duration, 2),
@@ -326,8 +324,7 @@ func (e *Engine) airplaneRoute(startLat, startLng, endLat, endLng float64) *Rout
 	duration := (dist/cruiseSpeedKmH)*60 + 30
 	start := Point{Lat: startLat, Lng: startLng}
 	end := Point{Lat: endLat, Lng: endLng}
-	const cruiseAltM = 11000.0 // ~35,000 ft — typical commercial cruising altitude
-	points := flightArc(start, end, 50, cruiseAltM)
+	points := flightArc(start, end, 50)
 	return &Route{
 		Distance: utils.Round(dist, 3),
 		Duration: utils.Round(duration, 2),
@@ -352,10 +349,7 @@ func (e *Engine) fallbackSpeed(mode TransportMode) float64 {
 // geographic midpoint, offset by 25% of the total distance. The perpendicular
 // direction is chosen so the arc always curves toward the nearest pole —
 // producing the classic upward-curving flight-path shape.
-//
-// maxAltM sets the peak altitude in metres (reached at the midpoint).
-// Pass 0 for ground-level routes.
-func flightArc(start, end Point, n int, maxAltM float64) []Point {
+func flightArc(start, end Point, n int) []Point {
 	const toRad = math.Pi / 180
 	const earthRadiusKm = 6371.0
 
@@ -403,18 +397,15 @@ func flightArc(start, end Point, n int, maxAltM float64) []Point {
 	ctrl := Point{Lat: ctrlLatR / toRad, Lng: ctrlLngR / toRad}
 
 	// Quadratic Bézier: B(t) = (1-t)²·P0 + 2(1-t)t·P1 + t²·P2
-	// Altitude follows a sinusoidal profile: 0 at endpoints, maxAltM at midpoint.
 	pts := make([]Point, n+2)
 	pts[0] = start
 	pts[n+1] = end
 	for i := 1; i <= n; i++ {
 		t := float64(i) / float64(n+1)
 		s := 1 - t
-		sinT := math.Sin(math.Pi * t)
 		pts[i] = Point{
 			Lat: s*s*start.Lat + 2*s*t*ctrl.Lat + t*t*end.Lat,
 			Lng: s*s*start.Lng + 2*s*t*ctrl.Lng + t*t*end.Lng,
-			Alt: maxAltM * sinT * sinT,
 		}
 	}
 	return pts

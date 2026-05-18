@@ -83,10 +83,6 @@ func normalizeAlternatives(n int) int {
 func buildRouteResponse(mode routing.TransportMode, routes []*routing.Route) *model.RouteResponse {
 	opts := make([]model.RouteOption, 0, len(routes))
 	for i, r := range routes {
-		path := make([][3]float64, len(r.Points))
-		for j, p := range r.Points {
-			path[j] = [3]float64{p.Lat, p.Lng, p.Alt}
-		}
 		opt := model.RouteOption{
 			ID:          i + 1,
 			Mode:        string(mode),
@@ -94,7 +90,6 @@ func buildRouteResponse(mode routing.TransportMode, routes []*routing.Route) *mo
 			DistanceKm:  r.Distance,
 			DurationMin: r.Duration,
 			Polyline:    r.Polyline,
-			Path:        path,
 		}
 		opts = append(opts, opt)
 	}
