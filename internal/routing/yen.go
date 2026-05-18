@@ -39,7 +39,7 @@ func (g *Graph) KFastestPaths(
 			spurID := base.Nodes[spurIdx].ID
 			rootNodes := base.Nodes[:spurIdx+1]
 
-			blockedEdges := make(map[EdgeKey]bool)
+			blockedEdges := make(map[EdgeKey]bool, len(accepted))
 			for _, path := range accepted {
 				if len(path.Nodes) <= spurIdx+1 {
 					continue
@@ -49,7 +49,7 @@ func (g *Graph) KFastestPaths(
 				}
 			}
 
-			blockedNodes := make(map[int64]bool)
+			blockedNodes := make(map[int64]bool, spurIdx)
 			for _, n := range rootNodes[:len(rootNodes)-1] {
 				blockedNodes[n.ID] = true
 			}

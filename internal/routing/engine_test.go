@@ -182,9 +182,9 @@ func TestCalculate_Car_UsesGraph(t *testing.T) {
 	}
 }
 
-// TestCalculate_Airplane_AlwaysHaversine ensures airplane mode always returns
-// a two-point straight line regardless of graph availability.
-func TestCalculate_Airplane_AlwaysHaversine(t *testing.T) {
+// TestCalculate_Airplane_AlwaysFlightArc ensures airplane mode always returns
+// a curved Bézier arc with 3D altitude regardless of graph availability.
+func TestCalculate_Airplane_AlwaysFlightArc(t *testing.T) {
 	g := NewGraph()
 	addNode(g, 1, 35.0, 51.0)
 	addNode(g, 2, 36.0, 52.0)
@@ -193,15 +193,26 @@ func TestCalculate_Airplane_AlwaysHaversine(t *testing.T) {
 	e := NewEngineWithGraph(40, g)
 	route := e.Calculate(35.0, 51.0, 36.0, 52.0, ModeAirplane)
 
-	if len(route.Points) != 2 {
-		t.Fatalf("airplane route should have exactly 2 points, got %d", len(route.Points))
+	// Arc has n+2 = 52 points (50 intermediate + 2 endpoints).
+	if len(route.Points) <= 2 {
+		t.Fatalf("airplane route should include curved arc points, got %d", len(route.Points))
 	}
-	if route.Points[0].Lat != 35.0 || route.Points[1].Lat != 36.0 {
+	if route.Points[0].Lat != 35.0 || route.Points[len(route.Points)-1].Lat != 36.0 {
 		t.Fatalf("airplane route endpoints wrong: %v", route.Points)
+	}
+	// Peak altitude should reach ~11 000 m at the midpoint.
+	maxAlt := 0.0
+	for _, p := range route.Points {
+		if p.Alt > maxAlt {
+			maxAlt = p.Alt
+		}
+	}
+	if maxAlt < 10000 {
+		t.Fatalf("expected peak altitude >= 10 000 m, got %.0f m", maxAlt)
 	}
 	// Duration includes fixed 30 min takeoff/landing overhead.
 	if route.Duration < 30 {
-		t.Fatalf("airplane duration should include ≥30 min overhead, got %.2f", route.Duration)
+		t.Fatalf("airplane duration should include >=30 min overhead, got %.2f", route.Duration)
 	}
 }
 

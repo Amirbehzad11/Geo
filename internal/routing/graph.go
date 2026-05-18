@@ -149,16 +149,28 @@ func (g *Graph) nodeRoutable(id int64, edgeOK func(*Edge) bool) bool {
 	if edgeOK == nil {
 		return true
 	}
-	for i := range g.Edges[id] {
-		if edgeOK(&g.Edges[id][i]) {
+	mask := g.nodeAccess[id]
+	if mask == 0 {
+		return false
+	}
+	// O(1) pre-filter: the nodeAccess mask is the union of access flags from
+	// every edge connected to this node (outgoing and incoming via AddEdge).
+	// If the synthetic union-edge fails edgeOK, no real edge will pass — bail out.
+	synth := edgeFromMask(mask)
+	if !edgeOK(&synth) {
+		return false
+	}
+	// Full edge scan for correctness: walking mode also checks HighwayType
+	// (e.g. walkingBlockedHW), which the bitmask does not capture.
+	edges := g.Edges[id]
+	for i := range edges {
+		if edgeOK(&edges[i]) {
 			return true
 		}
 	}
-	if mask := g.nodeAccess[id]; mask != 0 {
-		edge := edgeFromMask(mask)
-		return edgeOK(&edge)
-	}
-	return false
+	// No outgoing edges (destination-only node whose access was recorded from
+	// incoming edges). The mask already passed edgeOK above — trust it.
+	return len(edges) == 0
 }
 
 func maskForEdge(e Edge) accessMask {
