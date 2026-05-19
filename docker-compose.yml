@@ -68,6 +68,15 @@ services:
       BATCH_SIZE: "500"
       BATCH_FLUSH_SEC: "2"
 
+      # Direct read-only Laravel database access for /ws/shipments/nearby
+      SHIPMENT_DB_DRIVER: "postgres"
+      SHIPMENT_DB_DSN: "${SHIPMENT_DB_DSN:-}"
+      SHIPMENT_TABLE: "shipments"
+      SHIPMENT_ORIGIN_LAT_COLUMN: "start_lat"
+      SHIPMENT_ORIGIN_LNG_COLUMN: "start_lng"
+      SHIPMENT_SEARCH_RADIUS_KM: "10"
+      SHIPMENT_SEARCH_LIMIT: "100"
+
       # Public API settings
       CORS_ALLOWED_ORIGINS: "*"
       API_KEY_ENABLED: "false"

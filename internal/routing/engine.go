@@ -238,6 +238,7 @@ func walkingSpeed(e *Edge) float64 {
 // restricting to motorway/trunk/primary/secondary cuts the search space by ~90 %
 // and brings latency under 200 ms for most inter-city pairs.
 const longDistanceThresholdKm = 25.0
+const majorRoadConnectorSnapKm = 5.0
 
 func (e *Engine) graphRoutes(startLat, startLng, endLat, endLng float64, mode TransportMode, k int) []*Route {
 	p, ok := profiles[mode]
@@ -250,12 +251,11 @@ func (e *Engine) graphRoutes(startLat, startLng, endLat, endLng float64, mode Tr
 	if mode != ModeWalking {
 		dist := utils.Haversine(startLat, startLng, endLat, endLng)
 		if dist >= longDistanceThresholdKm {
-			hwAllowed := highwayOnlyFilter(p.edgeAllowed)
-			if routes := e.runAstar(startLat, startLng, endLat, endLng, k, p, hwAllowed); len(routes) > 0 {
-				return routes
+			k = 1
+			if route := e.runLongDistanceAstar(startLat, startLng, endLat, endLng, p); route != nil {
+				return []*Route{route}
 			}
-			// Highway-only failed (endpoints outside major-road coverage):
-			// fall through to full-network search below.
+			// Hybrid routing failed; fall through to full-network search below.
 		}
 	}
 
@@ -263,8 +263,8 @@ func (e *Engine) graphRoutes(startLat, startLng, endLat, endLng float64, mode Tr
 }
 
 // highwayOnlyFilter wraps edgeAllowed to additionally require the edge to be
-// on a major road class. This excludes residential, service, footway and other
-// minor OSM ways from A* exploration, reducing the effective graph by ~90 %.
+// on a major road class. This excludes residential, service, tertiary, footway
+// and other minor OSM ways from A* exploration for inter-city routes.
 func highwayOnlyFilter(edgeAllowed func(*Edge) bool) func(*Edge) bool {
 	return func(e *Edge) bool {
 		if !edgeAllowed(e) {
@@ -274,12 +274,45 @@ func highwayOnlyFilter(edgeAllowed func(*Edge) bool) func(*Edge) bool {
 		case "motorway", "motorway_link",
 			"trunk", "trunk_link",
 			"primary", "primary_link",
-			"secondary", "secondary_link",
-			"tertiary", "tertiary_link":
+			"secondary", "secondary_link":
 			return true
 		}
 		return false
 	}
+}
+
+func (e *Engine) runLongDistanceAstar(startLat, startLng, endLat, endLng float64, p modeProfile) *Route {
+	startNode := e.graph.NearestRoutableNodeWithin(startLat, startLng, snapThresholdKm, p.edgeAllowed)
+	endNode := e.graph.NearestRoutableNodeWithin(endLat, endLng, snapThresholdKm, p.edgeAllowed)
+	if startNode == nil || endNode == nil {
+		return nil
+	}
+
+	hwAllowed := highwayOnlyFilter(p.edgeAllowed)
+	startMajor := e.graph.NearestRoutableNodeWithin(startNode.Lat, startNode.Lng, majorRoadConnectorSnapKm, hwAllowed)
+	endMajor := e.graph.NearestRoutableNodeWithin(endNode.Lat, endNode.Lng, majorRoadConnectorSnapKm, hwAllowed)
+	if startMajor == nil || endMajor == nil {
+		return nil
+	}
+
+	startLeg, err := e.graph.fastestPath(startNode.ID, startMajor.ID, p.edgeAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
+	if err != nil {
+		return nil
+	}
+	highwayLeg, err := e.graph.fastestPath(startMajor.ID, endMajor.ID, hwAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
+	if err != nil {
+		return nil
+	}
+	endLeg, err := e.graph.fastestPath(endMajor.ID, endNode.ID, p.edgeAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
+	if err != nil {
+		return nil
+	}
+
+	path := combinePathResults(startLeg, highwayLeg, endLeg)
+	if path == nil {
+		return nil
+	}
+	return e.pathToRoute(path, startLat, startLng, endLat, endLng, p)
 }
 
 func (e *Engine) runAstar(startLat, startLng, endLat, endLng float64, k int, p modeProfile, edgeAllowed func(*Edge) bool) []*Route {
@@ -305,20 +338,34 @@ func (e *Engine) runAstar(startLat, startLng, endLat, endLng float64, k int, p m
 }
 
 func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLng float64, p modeProfile) *Route {
-	points := make([]Point, 0, len(path.Nodes))
+	points := make([]Point, 0, len(path.Nodes)+2)
+	appendPoint(&points, Point{Lat: startLat, Lng: startLng})
 	for _, n := range path.Nodes {
 		appendPoint(&points, Point{Lat: n.Lat, Lng: n.Lng})
 	}
+	appendPoint(&points, Point{Lat: endLat, Lng: endLng})
 
 	distance := path.DistanceKm
+	snapDistance := 0.0
 	if len(path.Nodes) > 0 {
 		first := path.Nodes[0]
 		last := path.Nodes[len(path.Nodes)-1]
-		distance += utils.Haversine(startLat, startLng, first.Lat, first.Lng)
-		distance += utils.Haversine(endLat, endLng, last.Lat, last.Lng)
+		snapDistance += utils.Haversine(startLat, startLng, first.Lat, first.Lng)
+		snapDistance += utils.Haversine(endLat, endLng, last.Lat, last.Lng)
+		distance += snapDistance
 	}
 
 	duration := path.TimeHours * 60
+	if snapDistance > 0 {
+		spd := p.fallbackSpeed
+		if spd <= 0 {
+			spd = e.avgSpeedKmH
+		}
+		if spd <= 0 {
+			spd = 40
+		}
+		duration += (snapDistance / spd) * 60
+	}
 	if duration == 0 && distance > 0 {
 		spd := p.fallbackSpeed
 		if spd <= 0 {
@@ -336,6 +383,44 @@ func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLn
 		Points:   points,
 		Polyline: EncodePolyline(points),
 	}
+}
+
+func (g *Graph) fastestPath(startID, goalID int64, edgeOK func(*Edge) bool, speedFn func(*Edge) float64, heuristicSpeedKmH float64) (*PathResult, error) {
+	if startID == goalID {
+		node, ok := g.Nodes[startID]
+		if !ok {
+			return nil, errors.New("node not in graph")
+		}
+		return &PathResult{Nodes: []*Node{node}}, nil
+	}
+	paths, err := g.KFastestPaths(startID, goalID, 1, edgeOK, speedFn, heuristicSpeedKmH)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, ErrNoPath
+	}
+	return paths[0], nil
+}
+
+func combinePathResults(paths ...*PathResult) *PathResult {
+	out := &PathResult{}
+	for _, path := range paths {
+		if path == nil || len(path.Nodes) == 0 {
+			continue
+		}
+		if len(out.Nodes) == 0 {
+			out.Nodes = append(out.Nodes, path.Nodes...)
+		} else {
+			out.Nodes = append(out.Nodes, path.Nodes[1:]...)
+		}
+		out.DistanceKm += path.DistanceKm
+		out.TimeHours += path.TimeHours
+	}
+	if len(out.Nodes) == 0 {
+		return nil
+	}
+	return out
 }
 
 func appendPoint(points *[]Point, p Point) {

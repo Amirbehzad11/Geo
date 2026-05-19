@@ -149,6 +149,48 @@ const ws = new WebSocket("ws://localhost:8080/ws/trip/1");
 ws.onmessage = (e) => console.log(JSON.parse(e.data));
 ```
 
+### `GET /ws/shipments/nearby` - Nearby shipment origins
+
+Connect a WebSocket client, then send the passenger coordinate. The service queries the configured Laravel database directly and returns shipment rows whose origin lat/lng are within the configured radius, defaulting to 10 km.
+
+```js
+const ws = new WebSocket("ws://localhost:8080/ws/shipments/nearby");
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    lat: 35.6892,
+    lng: 51.3890
+  }));
+};
+
+ws.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+Example response:
+
+```json
+{
+  "type": "shipment.nearby",
+  "timestamp_ms": 1779100000000,
+  "query": { "lat": 35.6892, "lng": 51.389, "radius_km": 10, "limit": 100 },
+  "count": 1,
+  "shipments": [
+    {
+      "id": 42,
+      "origin_lat": "35.6900",
+      "origin_lng": "51.3900",
+      "distance_km": 0.12
+    }
+  ]
+}
+```
+
+You can also pass one lookup in the URL:
+
+```js
+new WebSocket("ws://localhost:8080/ws/shipments/nearby?lat=35.6892&lng=51.3890");
+```
+
 ### `GET /health` — Health check
 
 ```bash
@@ -173,6 +215,13 @@ curl -s http://localhost:8080/health | jq .
 | `DEVIATION_THRESH_KM` | `0.05` | Distance from route (km) that triggers a deviation event |
 | `BATCH_SIZE` | `500` | PostGIS GPS insert batch size |
 | `BATCH_FLUSH_SEC` | `2` | Batch flush interval (seconds) |
+| `SHIPMENT_DB_DRIVER` | `mysql` | Direct shipment DB driver: `mysql`, `mariadb`, `postgres`, `postgresql`, or `pgx` |
+| `SHIPMENT_DB_DSN` | — | Laravel database DSN. MySQL example: `user:pass@tcp(host.docker.internal:3306)/laravel_db?parseTime=true` |
+| `SHIPMENT_TABLE` | `shipment` | Shipment table name in the Laravel database |
+| `SHIPMENT_ORIGIN_LAT_COLUMN` | `origin_lat` | Shipment origin latitude column |
+| `SHIPMENT_ORIGIN_LNG_COLUMN` | `origin_lng` | Shipment origin longitude column |
+| `SHIPMENT_SEARCH_RADIUS_KM` | `10` | Default nearby shipment search radius |
+| `SHIPMENT_SEARCH_LIMIT` | `100` | Default max rows returned over WebSocket; capped at 500 |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins for CORS |
 | `API_KEY_ENABLED` | `false` | Set to `true` to require `X-API-Key` header |
 | `API_KEY` | — | Expected API key value (used when `API_KEY_ENABLED=true`) |

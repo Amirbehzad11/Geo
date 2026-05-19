@@ -9,6 +9,9 @@ const routeCacheVersion = "v5-pedestrian-routing"
 func TripLocationKey(tripID int64) string   { return fmt.Sprintf("trip:%d:location", tripID) }
 func TripLastUpdateKey(tripID int64) string { return fmt.Sprintf("trip:%d:last_update", tripID) }
 func TripRouteKey(tripID int64) string      { return fmt.Sprintf("trip:%d:route", tripID) }
+func DriverLocationKey(driverID string) string {
+	return fmt.Sprintf("driver:%s:location", driverID)
+}
 
 func RouteKey(mode string, alternatives int, sLat, sLng, eLat, eLng float64) string {
 	if mode == "" {

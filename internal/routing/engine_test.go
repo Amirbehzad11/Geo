@@ -112,8 +112,8 @@ func TestCarSnapIgnoresNearestPedestrianOnlyNode(t *testing.T) {
 	e := &Engine{graph: g, avgSpeedKmH: 40}
 	route := e.Calculate(0, 0.0001, 0, 0.003, ModeCar)
 
-	if len(route.Points) < 2 || route.Points[0].Lng != 0.002 {
-		t.Fatalf("expected route to start from car-routable node, got points=%v", route.Points)
+	if len(route.Points) < 3 || route.Points[0].Lng != 0.0001 || route.Points[1].Lng != 0.002 {
+		t.Fatalf("expected route to start at requested coordinate then snap to car-routable node, got points=%v", route.Points)
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 const (
 	locationTTL  = 24 * time.Hour
 	routeTTL     = 1 * time.Hour
-	rateLimitTTL = 10 * time.Second // generous window for the NX key
+	rateLimitTTL = 10 * time.Second
 )
 
 // Redis wraps go-redis with domain-specific helpers.

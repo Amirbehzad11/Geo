@@ -24,12 +24,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	ginSwagger "github.com/swaggo/gin-swagger"
 	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"geo-service/config"
-	"geo-service/internal/cache"
 	_ "geo-service/docs"
+	"geo-service/internal/cache"
 	"geo-service/internal/events"
 	"geo-service/internal/handler"
 	"geo-service/internal/middleware"
@@ -69,15 +69,46 @@ func main() {
 		slog.Info("postgres disabled — POSTGRES_DSN not set")
 	}
 
+	shipmentCtx, shipmentCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shipmentDB, err := storage.NewShipmentDB(shipmentCtx, storage.ShipmentDBConfig{
+		Driver:    cfg.ShipmentDBDriver,
+		DSN:       cfg.ShipmentDBDSN,
+		Table:     cfg.ShipmentTable,
+		LatColumn: cfg.ShipmentOriginLatColumn,
+		LngColumn: cfg.ShipmentOriginLngColumn,
+	})
+	shipmentCancel()
+	if err != nil {
+		log.Fatalf("shipment database: %v", err)
+	}
+	if shipmentDB != nil {
+		defer shipmentDB.Close()
+		slog.Info("shipment database connected",
+			"driver", cfg.ShipmentDBDriver,
+			"table", cfg.ShipmentTable,
+			"lat_column", cfg.ShipmentOriginLatColumn,
+			"lng_column", cfg.ShipmentOriginLngColumn,
+		)
+	} else {
+		slog.Info("shipment search disabled - SHIPMENT_DB_DSN not set")
+	}
+
 	routingEngine := newRoutingEngine(cfg, pg)
 
 	routeSvc := service.NewRouteService(routingEngine, redisClient, eventBus, pg)
 	gpsSvc := service.NewGPSService(redisClient, eventBus, cfg.GPSRateLimitMs, cfg.DeviationThreshKm)
+	driverSvc := service.NewDriverService(redisClient, cfg.DriverGeoKey, cfg.DriverLocationStreamKey, cfg.DriverSearchRadiusKm, cfg.ShipmentSearchLimit)
+	var shipmentSvc *service.ShipmentService
+	if shipmentDB != nil {
+		shipmentSvc = service.NewShipmentService(shipmentDB, cfg.ShipmentSearchRadiusKm, cfg.ShipmentSearchLimit)
+	}
 
 	healthH := handler.NewHealthHandler(redisClient)
 	routeH := handler.NewRouteHandler(routeSvc)
 	gpsH := handler.NewGPSHandler(gpsSvc)
+	driverH := handler.NewDriverHandler(driverSvc)
 	wsH := handler.NewWSHandler(hub)
+	shipmentWSH := handler.NewShipmentWSHandler(shipmentSvc, driverSvc)
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
@@ -112,6 +143,7 @@ func main() {
 	r.GET("/docs/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	r.POST("/route", routeH.Calculate)
+	r.POST("/driver-location", driverH.UpdateLocation)
 
 	gps := r.Group("/gps")
 	{
@@ -120,6 +152,7 @@ func main() {
 	}
 
 	r.GET("/ws/trip/:id", wsH.HandleConnection)
+	r.GET("/ws/shipments/nearby", shipmentWSH.HandleNearby)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
