@@ -48,6 +48,27 @@ func buildInstructions(path *PathResult, mode TransportMode, start, end Point, f
 			bearingDegrees(prev.Lat, prev.Lng, cur.Lat, cur.Lng),
 			bearingDegrees(cur.Lat, cur.Lng, next.Lat, next.Lng),
 		)
+		linkEnd, linkDelta, linkDistance := unnamedLinkChain(path, i)
+		if linkEnd > i {
+			if math.Abs(linkDelta) >= 150 {
+				maneuvers = append(maneuvers, maneuver{
+					nodeIndex: i,
+					typ:       "uturn",
+					modifier:  "uturn",
+					street:    streetName(path, linkEnd),
+				})
+			} else if linkDistance >= 0.08 && math.Abs(linkDelta) >= 55 {
+				typ, modifier := maneuverType(linkDelta)
+				maneuvers = append(maneuvers, maneuver{
+					nodeIndex: i,
+					typ:       typ,
+					modifier:  modifier,
+					street:    streetName(path, linkEnd),
+				})
+			}
+			i = linkEnd - 1
+			continue
+		}
 		prevStreet := streetName(path, i-1)
 		nextStreet := streetName(path, i)
 		if math.Abs(delta) < 25 && sameStreet(prevStreet, nextStreet) {
@@ -152,10 +173,7 @@ func streetName(path *PathResult, edgeIdx int) string {
 	if path == nil || edgeIdx < 0 || edgeIdx >= len(path.Edges) {
 		return ""
 	}
-	if name := strings.TrimSpace(path.Edges[edgeIdx].Name); name != "" {
-		return name
-	}
-	return strings.TrimSpace(path.Edges[edgeIdx].HighwayType)
+	return strings.TrimSpace(path.Edges[edgeIdx].Name)
 }
 
 func sameStreet(a, b string) bool {
@@ -183,6 +201,48 @@ func maneuverType(delta float64) (string, string) {
 	default:
 		return "turn", "sharp_" + side
 	}
+}
+
+func unnamedLinkChain(path *PathResult, startEdge int) (endEdge int, delta float64, distanceKm float64) {
+	if path == nil || startEdge < 0 || startEdge >= len(path.Edges) || startEdge+1 >= len(path.Nodes) {
+		return startEdge, 0, 0
+	}
+	if !isUnnamedLink(path.Edges[startEdge]) {
+		return startEdge, 0, 0
+	}
+
+	endEdge = startEdge
+	for endEdge < len(path.Edges) && isUnnamedLink(path.Edges[endEdge]) {
+		distanceKm += path.Edges[endEdge].DistanceKm
+		endEdge++
+	}
+	if endEdge >= len(path.Nodes) {
+		endEdge = len(path.Nodes) - 1
+	}
+	if endEdge <= startEdge {
+		return startEdge, 0, distanceKm
+	}
+
+	prev := path.Nodes[startEdge-1]
+	enter := path.Nodes[startEdge]
+	exit := path.Nodes[endEdge]
+	if endEdge+1 >= len(path.Nodes) {
+		delta = turnAngle(
+			bearingDegrees(prev.Lat, prev.Lng, enter.Lat, enter.Lng),
+			bearingDegrees(enter.Lat, enter.Lng, exit.Lat, exit.Lng),
+		)
+		return endEdge, delta, distanceKm
+	}
+	after := path.Nodes[endEdge+1]
+	delta = turnAngle(
+		bearingDegrees(prev.Lat, prev.Lng, enter.Lat, enter.Lng),
+		bearingDegrees(exit.Lat, exit.Lng, after.Lat, after.Lng),
+	)
+	return endEdge, delta, distanceKm
+}
+
+func isUnnamedLink(edge Edge) bool {
+	return strings.TrimSpace(edge.Name) == "" && strings.HasSuffix(strings.TrimSpace(edge.HighwayType), "_link")
 }
 
 func instructionText(typ, modifier, street string) string {

@@ -2,6 +2,7 @@ package routing
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,31 @@ func TestCarRouteIncludesTurnByTurnInstructions(t *testing.T) {
 	}
 	if route.Instructions[len(route.Instructions)-1].Type != "arrive" {
 		t.Fatalf("expected final instruction to arrive, got %+v", route.Instructions[len(route.Instructions)-1])
+	}
+}
+
+func TestInstructionsHideUnnamedLinkRoadClasses(t *testing.T) {
+	g := NewGraph()
+	addNode(g, 1, 0, 0)
+	addNode(g, 2, 0, 0.01)
+	addNode(g, 3, 0.0001, 0.011)
+	addNode(g, 4, 0.0002, 0.012)
+	addNode(g, 5, 0.001, 0.02)
+
+	addEdge(g, 1, 2, 1, 60, "primary", true, true, true, false)
+	g.Edges[1][0].Name = "Main Road"
+	addEdge(g, 2, 3, 0.015, 40, "primary_link", true, true, true, false)
+	addEdge(g, 3, 4, 0.011, 40, "primary_link", true, true, true, false)
+	addEdge(g, 4, 5, 1, 60, "primary", true, true, true, false)
+	g.Edges[4][0].Name = "Main Road"
+
+	e := &Engine{graph: g, avgSpeedKmH: 40}
+	route := e.Calculate(0, 0, 0.001, 0.02, ModeCar)
+
+	for _, inst := range route.Instructions {
+		if strings.Contains(inst.Text, "primary_link") || inst.StreetName == "primary_link" {
+			t.Fatalf("instruction leaked OSM road class: %+v", inst)
+		}
 	}
 }
 

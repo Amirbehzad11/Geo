@@ -2,7 +2,7 @@ package cache
 
 import "fmt"
 
-const routeCacheVersion = "v7-turn-instructions"
+const routeCacheVersion = "v8-clean-instructions"
 
 // Key builders — single source of truth for all Redis key patterns.
 
