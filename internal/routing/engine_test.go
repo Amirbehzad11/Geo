@@ -127,6 +127,42 @@ func TestInstructionsHideUnnamedLinkRoadClasses(t *testing.T) {
 	}
 }
 
+func TestInstructionsCollapseStraightContinuesUntilNextStreet(t *testing.T) {
+	g := NewGraph()
+	addNode(g, 1, 0, 0)
+	addNode(g, 2, 0, 0.01)
+	addNode(g, 3, 0, 0.02)
+	addNode(g, 4, 0, 0.03)
+	addNode(g, 5, 0.01, 0.03)
+
+	addEdge(g, 1, 2, 1, 60, "residential", true, true, true, true)
+	g.Edges[1][0].Name = "A Street"
+	addEdge(g, 2, 3, 1, 60, "residential", true, true, true, true)
+	g.Edges[2][0].Name = "B Street"
+	addEdge(g, 3, 4, 1, 60, "residential", true, true, true, true)
+	g.Edges[3][0].Name = "C Street"
+	addEdge(g, 4, 5, 1, 60, "primary", true, true, true, true)
+	g.Edges[4][0].Name = "D Street"
+
+	e := &Engine{graph: g, avgSpeedKmH: 40}
+	route := e.Calculate(0, 0, 0.01, 0.03, ModeCar)
+
+	continueCount := 0
+	var continueText string
+	for _, inst := range route.Instructions {
+		if inst.Type == "continue" {
+			continueCount++
+			continueText = inst.Text
+		}
+	}
+	if continueCount != 1 {
+		t.Fatalf("expected one collapsed continue instruction, got %d: %+v", continueCount, route.Instructions)
+	}
+	if !strings.Contains(continueText, "D Street") {
+		t.Fatalf("expected continue text to mention next street, got %q", continueText)
+	}
+}
+
 func TestWalkingCanUsePedestrianEdgesThatCarsCannot(t *testing.T) {
 	g := NewGraph()
 	addNode(g, 1, 0, 0)

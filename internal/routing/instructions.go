@@ -92,6 +92,7 @@ func buildInstructions(path *PathResult, mode TransportMode, start, end Point, f
 		typ:       "arrive",
 		modifier:  "straight",
 	})
+	maneuvers = collapseContinues(maneuvers)
 
 	out := make([]Instruction, 0, len(maneuvers))
 	for i := 0; i < len(maneuvers); i++ {
@@ -106,11 +107,12 @@ func buildInstructions(path *PathResult, mode TransportMode, start, end Point, f
 		}
 
 		distanceKm, durationMin := instructionLeg(path, m.nodeIndex, nextManeuverNode(maneuvers, i), mode, fallbackSpeedKmH)
+		until := nextInstructionTarget(maneuvers, i)
 		inst := Instruction{
 			Index:       i,
 			Type:        m.typ,
 			Modifier:    m.modifier,
-			Text:        instructionText(m.typ, m.modifier, m.street),
+			Text:        instructionText(m.typ, m.modifier, m.street, until),
 			DistanceKm:  utils.Round(distanceKm, 3),
 			DurationMin: utils.Round(durationMin, 2),
 			Location:    location,
@@ -130,6 +132,32 @@ func arrivalInstruction(index int, p Point) Instruction {
 		Text:     "به مقصد رسیدید",
 		Location: p,
 	}
+}
+
+func collapseContinues(in []maneuver) []maneuver {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]maneuver, 0, len(in))
+	for _, m := range in {
+		if m.typ == "continue" && len(out) > 0 && out[len(out)-1].typ == "continue" {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func nextInstructionTarget(maneuvers []maneuver, i int) string {
+	for j := i + 1; j < len(maneuvers); j++ {
+		if maneuvers[j].typ == "arrive" {
+			return "destination"
+		}
+		if maneuvers[j].street != "" {
+			return maneuvers[j].street
+		}
+	}
+	return ""
 }
 
 func nextManeuverNode(maneuvers []maneuver, i int) int {
@@ -245,22 +273,23 @@ func isUnnamedLink(edge Edge) bool {
 	return strings.TrimSpace(edge.Name) == "" && strings.HasSuffix(strings.TrimSpace(edge.HighwayType), "_link")
 }
 
-func instructionText(typ, modifier, street string) string {
+func instructionText(typ, modifier, street, until string) string {
 	target := ""
 	if street != "" {
 		target = " به " + street
 	}
+	untilText := instructionUntilText(until)
 	switch typ {
 	case "depart":
 		if street != "" {
-			return "حرکت را در " + street + " شروع کنید"
+			return "حرکت را در " + street + " شروع کنید" + untilText
 		}
-		return "حرکت را شروع کنید"
+		return "حرکت را شروع کنید" + untilText
 	case "continue":
 		if street != "" {
-			return "در " + street + " ادامه دهید"
+			return "در " + street + " ادامه دهید" + untilText
 		}
-		return "مستقیم ادامه دهید"
+		return "مستقیم ادامه دهید" + untilText
 	case "uturn":
 		return "دور بزنید" + target
 	case "turn":
@@ -269,6 +298,17 @@ func instructionText(typ, modifier, street string) string {
 		return "به مقصد رسیدید"
 	default:
 		return "ادامه دهید" + target
+	}
+}
+
+func instructionUntilText(until string) string {
+	switch until {
+	case "":
+		return ""
+	case "destination":
+		return " تا مقصد"
+	default:
+		return " تا " + until
 	}
 }
 
