@@ -23,6 +23,13 @@ type Config struct {
 	APIKeyEnabled      bool     // API_KEY_ENABLED; when true X-API-Key header is required
 	APIKey             string   // API_KEY; the expected key value
 
+	// ---- routing backend ----
+	RoutingBackend        string // ROUTING_BACKEND: "internal" (default) | "osrm"
+	OSRMBaseURL           string // OSRM_BASE_URL: e.g. "http://osrm:5000"
+	RoutingTimeoutMs      int64  // ROUTING_TIMEOUT_MS: per-call backend deadline (default 10 000)
+	RoutingMaxInFlight    int    // ROUTING_MAX_IN_FLIGHT: concurrent routing cap (default 100)
+	RoutingQueueTimeoutMs int64  // ROUTING_QUEUE_TIMEOUT_MS: semaphore wait time (default 1 000)
+
 	ShipmentDBDriver        string  // SHIPMENT_DB_DRIVER; mysql or postgres/pgx
 	ShipmentDBDSN           string  // SHIPMENT_DB_DSN; direct read-only connection to Laravel DB
 	ShipmentTable           string  // SHIPMENT_TABLE; default shipment
@@ -54,6 +61,10 @@ func Load() *Config {
 		corsOrigins = []string{"*"}
 	}
 
+	routingMaxInFlight, _ := strconv.Atoi(getEnv("ROUTING_MAX_IN_FLIGHT", "100"))
+	routingTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_TIMEOUT_MS", "10000"), 10, 64)
+	routingQueueTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_QUEUE_TIMEOUT_MS", "1000"), 10, 64)
+
 	return &Config{
 		Port:               getEnv("PORT", "8080"),
 		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),
@@ -82,6 +93,12 @@ func Load() *Config {
 		DriverGeoKey:            getEnv("DRIVER_GEO_KEY", "drivers:geo"),
 		DriverLocationStreamKey: getEnv("DRIVER_LOCATION_STREAM_KEY", "driver:locations:stream"),
 		DriverSearchRadiusKm:    driverRadiusKm,
+
+		RoutingBackend:        getEnv("ROUTING_BACKEND", "internal"),
+		OSRMBaseURL:           getEnv("OSRM_BASE_URL", "http://osrm:5000"),
+		RoutingTimeoutMs:      routingTimeoutMs,
+		RoutingMaxInFlight:    routingMaxInFlight,
+		RoutingQueueTimeoutMs: routingQueueTimeoutMs,
 	}
 }
 

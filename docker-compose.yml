@@ -37,6 +37,70 @@ services:
       timeout: 3s
       retries: 10
 
+  # ── OSRM — self-hosted routing engine ─────────────────────────────────────
+  #
+  # Algorithm choice: MLD (Multi-Level Dijkstra)
+  #   • CH  (Contraction Hierarchies) is marginally faster per query but
+  #     requires a full re-contract when the map changes (hours for Iran).
+  #   • MLD supports live traffic updates and incremental customization
+  #     (osrm-customize re-runs in minutes after a map update).
+  #   → MLD is the right choice for a production service that needs regular
+  #     map refreshes without prolonged downtime.
+  #
+  # Prerequisites — run ONCE before `docker compose up`:
+  #
+  #   mkdir -p ./data
+  #   # Place your Iran OSM extract here:
+  #   #   wget -O ./data/map.osm.pbf https://download.geofabrik.de/asia/iran-latest.osm.pbf
+  #
+  #   # 1. Extract the road network (choose profile: car.lua / foot.lua)
+  #   docker run --rm -v $(pwd)/data:/data osrm/osrm-backend:latest \
+  #     osrm-extract -p /opt/car.lua /data/map.osm.pbf
+  #
+  #   # 2. Partition the graph for MLD
+  #   docker run --rm -v $(pwd)/data:/data osrm/osrm-backend:latest \
+  #     osrm-partition /data/map.osrm
+  #
+  #   # 3. Customize (weight cells — fast, run after any map update)
+  #   docker run --rm -v $(pwd)/data:/data osrm/osrm-backend:latest \
+  #     osrm-customize /data/map.osrm
+  #
+  # After that, `docker compose up osrm` starts the HTTP server.
+  #
+  # Resource expectations (128 GB RAM):
+  #   • Iran graph: ~2–3 GB RAM after extract (car profile)
+  #   • osrm-routed idle: ~3 GB; under load: up to 8 GB
+  #   • Throughput: 10 000+ queries/second at < 5 ms p99 (MLD, car)
+  #
+  osrm:
+    image: osrm/osrm-backend:latest
+    restart: unless-stopped
+    networks:
+      - geo_net
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/data
+    # Run with MLD algorithm; adjust thread count to your CPU core count.
+    command: >
+      osrm-routed
+        --algorithm=MLD
+        --max-table-size=10000
+        --max-matching-size=100
+        /data/map.osrm
+    # OSRM does not expose a built-in health check endpoint. The geo-service
+    # treats any connection error as a temporary failure and falls back to the
+    # internal A* engine automatically — so it is safe to start geo-service
+    # even before OSRM finishes loading.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    profiles:
+      - osrm  # opt-in: only started when COMPOSE_PROFILES=osrm
+
   geo-service:
     build: .
     restart: unless-stopped
@@ -56,9 +120,18 @@ services:
       # PostGIS (comment out to disable)
       POSTGRES_DSN: "host=postgres port=5432 user=geo password=geo_secret dbname=geodb sslmode=disable"
 
-      # Routing
+      # Internal routing engine (always loaded as fallback)
       AVG_SPEED_KMH: "40"
       ROAD_GRAPH_LOAD_TIMEOUT_SEC: "300"
+
+      # Routing backend selection
+      # Set ROUTING_BACKEND=osrm to use OSRM as the primary engine (recommended
+      # for production). The internal A* engine is always kept as the fallback.
+      ROUTING_BACKEND: "${ROUTING_BACKEND:-internal}"
+      OSRM_BASE_URL: "http://osrm:5000"
+      ROUTING_TIMEOUT_MS: "10000"       # 10 s per OSRM call before fallback
+      ROUTING_MAX_IN_FLIGHT: "100"      # concurrent routing slots
+      ROUTING_QUEUE_TIMEOUT_MS: "1000"  # wait time for a free slot (ms)
 
       # GPS processing
       GPS_RATE_LIMIT_MS: "3000"

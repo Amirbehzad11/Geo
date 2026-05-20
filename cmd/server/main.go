@@ -2,7 +2,7 @@
 //
 //	@title			geo-service
 //	@version		1.0
-//	@description	A production-ready geospatial routing microservice with a custom A* + Yen's k-shortest-paths algorithm, live GPS tracking, WebSocket event delivery, and a PostGIS-backed OSM road graph.
+//	@description	A production-ready geospatial routing microservice. Supports self-hosted OSRM (default) with an automatic in-process A* + Yen's k-shortest-paths fallback, live GPS tracking, WebSocket event delivery, and a PostGIS-backed OSM road graph.
 //	@contact.name	GitHub Issues
 //	@contact.url	https://github.com/Amirbehzad11/geo-service/issues
 //	@license.name	MIT
@@ -86,16 +86,23 @@ func main() {
 		slog.Info("shipment database connected",
 			"driver", cfg.ShipmentDBDriver,
 			"table", cfg.ShipmentTable,
-			"lat_column", cfg.ShipmentOriginLatColumn,
-			"lng_column", cfg.ShipmentOriginLngColumn,
 		)
 	} else {
-		slog.Info("shipment search disabled - SHIPMENT_DB_DSN not set")
+		slog.Info("shipment search disabled — SHIPMENT_DB_DSN not set")
 	}
 
-	routingEngine := newRoutingEngine(cfg, pg)
+	// ---- routing engine ---------------------------------------------------------
+	// The internal A* engine is always initialised (used as the fallback and for
+	// airplane mode which OSRM does not support).
+	internalEngine := newRoutingEngine(cfg, pg)
+	routeBackend := buildRouteBackend(cfg, internalEngine)
 
-	routeSvc := service.NewRouteService(routingEngine, redisClient, eventBus, pg)
+	// ---- services ---------------------------------------------------------------
+	routeSvc := service.NewRouteService(routeBackend, redisClient, eventBus, pg, service.RouteServiceConfig{
+		MaxInFlight:    cfg.RoutingMaxInFlight,
+		QueueTimeoutMs: cfg.RoutingQueueTimeoutMs,
+		RouteTimeoutMs: cfg.RoutingTimeoutMs,
+	})
 	gpsSvc := service.NewGPSService(redisClient, eventBus, cfg.GPSRateLimitMs, cfg.DeviationThreshKm)
 	driverSvc := service.NewDriverService(redisClient, cfg.DriverGeoKey, cfg.DriverLocationStreamKey, cfg.DriverSearchRadiusKm, cfg.ShipmentSearchLimit)
 	var shipmentSvc *service.ShipmentService
@@ -103,6 +110,7 @@ func main() {
 		shipmentSvc = service.NewShipmentService(shipmentDB, cfg.ShipmentSearchRadiusKm, cfg.ShipmentSearchLimit)
 	}
 
+	// ---- handlers ---------------------------------------------------------------
 	healthH := handler.NewHealthHandler(redisClient)
 	routeH := handler.NewRouteHandler(routeSvc)
 	gpsH := handler.NewGPSHandler(gpsSvc)
@@ -110,6 +118,7 @@ func main() {
 	wsH := handler.NewWSHandler(hub)
 	shipmentWSH := handler.NewShipmentWSHandler(shipmentSvc, driverSvc)
 
+	// ---- background workers -----------------------------------------------------
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
 
@@ -122,6 +131,7 @@ func main() {
 		)
 	}
 
+	// ---- HTTP server ------------------------------------------------------------
 	if os.Getenv("GIN_MODE") == "" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -186,6 +196,9 @@ func main() {
 	slog.Info("stopped")
 }
 
+// newRoutingEngine loads the road graph from PostGIS and returns an Engine.
+// The internal engine is always created — it is used as the fallback when OSRM
+// is unavailable, and exclusively for airplane mode in all configurations.
 func newRoutingEngine(cfg *config.Config, pg *storage.Postgres) *routing.Engine {
 	if pg == nil {
 		log.Fatal("[routing] POSTGRES_DSN is required — PostGIS road graph unavailable")
@@ -205,4 +218,33 @@ func newRoutingEngine(cfg *config.Config, pg *storage.Postgres) *routing.Engine 
 
 	slog.Info("road network loaded", "nodes", g.NodeCount())
 	return routing.NewEngineWithGraph(cfg.AvgSpeedKmH, g)
+}
+
+// buildRouteBackend constructs the active RouteBackend based on config.
+//
+//   - ROUTING_BACKEND=internal  →  InternalBackend only
+//   - ROUTING_BACKEND=osrm      →  OSRMBackend with InternalBackend as fallback
+//
+// The internal engine is always available as the fallback so that airplane
+// mode and remote-area endpoints (outside OSRM graph coverage) still work.
+func buildRouteBackend(cfg *config.Config, engine *routing.Engine) service.RouteBackend {
+	internal := service.NewInternalBackend(engine)
+
+	if cfg.RoutingBackend == "osrm" && cfg.OSRMBaseURL != "" {
+		timeout := time.Duration(cfg.RoutingTimeoutMs) * time.Millisecond
+		if timeout <= 0 {
+			timeout = 10 * time.Second
+		}
+		osrmBackend := service.NewOSRMBackend(cfg.OSRMBaseURL, timeout)
+		slog.Info("routing backend: OSRM with internal fallback",
+			"osrm_url", cfg.OSRMBaseURL,
+			"timeout_ms", cfg.RoutingTimeoutMs,
+		)
+		return service.NewFallbackBackend(osrmBackend, internal)
+	}
+
+	slog.Info("routing backend: internal A* + Yen's k-shortest-paths",
+		"max_in_flight", cfg.RoutingMaxInFlight,
+	)
+	return internal
 }

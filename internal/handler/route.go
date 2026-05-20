@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -27,7 +28,7 @@ func NewRouteHandler(svc *service.RouteService) *RouteHandler {
 // Calculate handles POST /route
 //
 //	@Summary		Calculate a route
-//	@Description	Computes the fastest route between two coordinates using A* search over the OSM road graph, with Yen's k-shortest-paths algorithm for alternative routes. Falls back to Haversine straight-line when the endpoints are outside graph coverage.
+//	@Description	Computes the fastest route between two coordinates. Uses the configured routing backend (OSRM or internal A*), with automatic fallback to the internal engine when the primary backend is unavailable. Falls back to a Haversine arc when endpoints lie outside graph coverage.
 //	@Tags			routing
 //	@Accept			json
 //	@Produce		json
@@ -35,6 +36,7 @@ func NewRouteHandler(svc *service.RouteService) *RouteHandler {
 //	@Success		200		{object}	response.Success{data=model.RouteResponse}		"Route calculated successfully"
 //	@Failure		400		{object}	response.Failure								"Malformed JSON body"
 //	@Failure		422		{object}	response.Failure								"Validation error (invalid coordinates or transport mode)"
+//	@Failure		503		{object}	response.Failure								"Routing engine overloaded — too many concurrent requests"
 //	@Failure		500		{object}	response.Failure								"Internal routing error"
 //	@Router			/route [post]
 func (h *RouteHandler) Calculate(c *gin.Context) {
@@ -65,7 +67,13 @@ func (h *RouteHandler) Calculate(c *gin.Context) {
 	start := time.Now()
 	resp, err := h.svc.Calculate(c.Request.Context(), &req)
 	elapsed := time.Since(start)
+
 	if err != nil {
+		if errors.Is(err, service.ErrRoutingOverloaded) {
+			response.Fail(c, http.StatusServiceUnavailable, "ROUTING_OVERLOADED",
+				"routing engine is busy; please retry in a moment")
+			return
+		}
 		response.Fail(c, http.StatusInternalServerError, "ROUTING_ERROR", err.Error())
 		return
 	}
