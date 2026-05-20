@@ -227,6 +227,11 @@ curl -s http://localhost:8080/health | jq .
 | `API_KEY` | — | Expected API key value (used when `API_KEY_ENABLED=true`) |
 | `GIN_MODE` | `release` | Gin framework mode (`release` or `debug`) |
 
+`type: "passenger"` on `/ws/shipments/nearby` requires `SHIPMENT_DB_DSN`.
+Without it the service cannot read Laravel shipments and returns
+`SHIPMENT_SEARCH_DISABLED`. See `.env.example` for MySQL and PostgreSQL DSN
+examples.
+
 ---
 
 ## Algorithm Deep Dive

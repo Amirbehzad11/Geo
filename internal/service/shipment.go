@@ -8,7 +8,7 @@ import (
 	"geo-service/internal/model"
 )
 
-var ErrShipmentSearchDisabled = errors.New("shipment search database is not configured")
+var ErrShipmentSearchDisabled = errors.New("shipment search database is not configured; set SHIPMENT_DB_DSN, SHIPMENT_DB_DRIVER, SHIPMENT_TABLE, SHIPMENT_ORIGIN_LAT_COLUMN, and SHIPMENT_ORIGIN_LNG_COLUMN")
 
 const (
 	defaultShipmentRadiusKm = 10.0

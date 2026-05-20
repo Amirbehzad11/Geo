@@ -42,7 +42,7 @@ func NewShipmentWSHandler(svc *service.ShipmentService, driverSvc *service.Drive
 //	@Router			/ws/shipments/nearby [get]
 func (h *ShipmentWSHandler) HandleNearby(c *gin.Context) {
 	if h.svc == nil && h.driverSvc == nil {
-		response.Fail(c, http.StatusServiceUnavailable, "SHIPMENT_SEARCH_DISABLED", "shipment search database is not configured")
+		response.Fail(c, http.StatusServiceUnavailable, "SHIPMENT_SEARCH_DISABLED", service.ErrShipmentSearchDisabled.Error())
 		return
 	}
 
