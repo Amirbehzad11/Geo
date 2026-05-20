@@ -73,6 +73,34 @@ func TestLongDistanceCarRouteDoesNotFilterMinorRoads(t *testing.T) {
 	}
 }
 
+func TestCarRouteIncludesTurnByTurnInstructions(t *testing.T) {
+	g := NewGraph()
+	addNode(g, 1, 0, 0)
+	addNode(g, 2, 0, 0.01)
+	addNode(g, 3, 0.01, 0.01)
+
+	addEdge(g, 1, 2, 1, 60, "residential", true, true, true, true)
+	g.Edges[1][0].Name = "First St"
+	addEdge(g, 2, 3, 1, 60, "primary", true, true, true, true)
+	g.Edges[2][0].Name = "Second St"
+
+	e := &Engine{graph: g, avgSpeedKmH: 40}
+	route := e.Calculate(0, 0, 0.01, 0.01, ModeCar)
+
+	if len(route.Instructions) < 3 {
+		t.Fatalf("expected depart, turn, arrive instructions, got %+v", route.Instructions)
+	}
+	if route.Instructions[0].Type != "depart" {
+		t.Fatalf("expected first instruction to depart, got %+v", route.Instructions[0])
+	}
+	if route.Instructions[1].Type != "turn" || route.Instructions[1].Modifier != "left" {
+		t.Fatalf("expected left turn instruction, got %+v", route.Instructions[1])
+	}
+	if route.Instructions[len(route.Instructions)-1].Type != "arrive" {
+		t.Fatalf("expected final instruction to arrive, got %+v", route.Instructions[len(route.Instructions)-1])
+	}
+}
+
 func TestWalkingCanUsePedestrianEdgesThatCarsCannot(t *testing.T) {
 	g := NewGraph()
 	addNode(g, 1, 0, 0)

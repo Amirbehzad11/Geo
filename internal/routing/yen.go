@@ -102,6 +102,7 @@ func (g *Graph) combineRootAndSpur(
 	nodes := make([]*Node, 0, len(rootNodes)+len(spurNodes)-1)
 	nodes = append(nodes, rootNodes...)
 	nodes = append(nodes, spurNodes[1:]...)
+	edges := make([]Edge, 0, len(nodes)-1)
 
 	var dist, hours float64
 	for i := 0; i < len(nodes)-1; i++ {
@@ -109,12 +110,14 @@ func (g *Graph) combineRootAndSpur(
 		if !ok {
 			return nil, false
 		}
+		edges = append(edges, *edge)
 		dist += edge.DistanceKm
 		hours += edgeTravelTimeHours(edge, speedFn)
 	}
 
 	return &PathResult{
 		Nodes:      nodes,
+		Edges:      edges,
 		DistanceKm: dist,
 		TimeHours:  hours,
 	}, true

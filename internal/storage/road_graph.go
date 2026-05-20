@@ -68,7 +68,7 @@ func (p *Postgres) loadRoadGraphTable(ctx context.Context, g *routing.Graph, see
 		SELECT
 			from_node_id, to_node_id,
 			from_lat, from_lng, to_lat, to_lng,
-			distance_km, speed_kmh, highway_type,
+			distance_km, speed_kmh, highway_type, COALESCE(name, ''),
 			bidirectional, car_allowed, motorcycle_allowed, bus_allowed, foot_allowed
 		FROM %s
 		WHERE distance_km > 0`, quoteIdent(table))
@@ -85,14 +85,14 @@ func (p *Postgres) loadRoadGraphTable(ctx context.Context, g *routing.Graph, see
 			fromID, toID                   int64
 			fromLat, fromLng, toLat, toLng float64
 			distanceKm, speedKmH           float64
-			highwayType                    string
+			highwayType, name              string
 			bidirectional                  bool
 			car, motorcycle, bus, foot     bool
 		)
 		if err := rows.Scan(
 			&fromID, &toID,
 			&fromLat, &fromLng, &toLat, &toLng,
-			&distanceKm, &speedKmH, &highwayType,
+			&distanceKm, &speedKmH, &highwayType, &name,
 			&bidirectional, &car, &motorcycle, &bus, &foot,
 		); err != nil {
 			return 0, fmt.Errorf("scan road segment: %w", err)
@@ -116,6 +116,7 @@ func (p *Postgres) loadRoadGraphTable(ctx context.Context, g *routing.Graph, see
 			SpeedKmH:          speedKmH,
 			TimeHours:         distanceKm / speedKmH,
 			HighwayType:       highwayType,
+			Name:              name,
 			CarAllowed:        car,
 			MotorcycleAllowed: motorcycle,
 			BusAllowed:        bus,

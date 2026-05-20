@@ -84,12 +84,13 @@ func buildRouteResponse(mode routing.TransportMode, routes []*routing.Route) *mo
 	opts := make([]model.RouteOption, 0, len(routes))
 	for i, r := range routes {
 		opt := model.RouteOption{
-			ID:          i + 1,
-			Mode:        string(mode),
-			IsPrimary:   i == 0,
-			DistanceKm:  r.Distance,
-			DurationMin: r.Duration,
-			Polyline:    r.Polyline,
+			ID:           i + 1,
+			Mode:         string(mode),
+			IsPrimary:    i == 0,
+			DistanceKm:   r.Distance,
+			DurationMin:  r.Duration,
+			Polyline:     r.Polyline,
+			Instructions: routeInstructions(r.Instructions),
 		}
 		opts = append(opts, opt)
 	}
@@ -105,6 +106,29 @@ func buildRouteResponse(mode routing.TransportMode, routes []*routing.Route) *mo
 		resp.Polyline = opts[0].Polyline
 	}
 	return resp
+}
+
+func routeInstructions(in []routing.Instruction) []model.RouteInstruction {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]model.RouteInstruction, 0, len(in))
+	for _, inst := range in {
+		out = append(out, model.RouteInstruction{
+			Index:       inst.Index,
+			Type:        inst.Type,
+			Modifier:    inst.Modifier,
+			Text:        inst.Text,
+			DistanceKm:  inst.DistanceKm,
+			DurationMin: inst.DurationMin,
+			Location: model.RoutePoint{
+				Lat: inst.Location.Lat,
+				Lng: inst.Location.Lng,
+			},
+			StreetName: inst.StreetName,
+		})
+	}
+	return out
 }
 
 func (s *RouteService) persistRoute(req *model.RouteRequest, resp *model.RouteResponse) {

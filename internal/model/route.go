@@ -23,10 +23,27 @@ type RouteResponse struct {
 }
 
 type RouteOption struct {
-	ID          int     `json:"id"`
-	Mode        string  `json:"mode"`
-	IsPrimary   bool    `json:"is_primary"`
-	DistanceKm  float64 `json:"distance_km"`
-	DurationMin float64 `json:"duration_min"`
-	Polyline    string  `json:"polyline"`
+	ID           int                `json:"id"`
+	Mode         string             `json:"mode"`
+	IsPrimary    bool               `json:"is_primary"`
+	DistanceKm   float64            `json:"distance_km"`
+	DurationMin  float64            `json:"duration_min"`
+	Polyline     string             `json:"polyline"`
+	Instructions []RouteInstruction `json:"instructions,omitempty"`
+}
+
+type RouteInstruction struct {
+	Index       int        `json:"index"`
+	Type        string     `json:"type"`
+	Modifier    string     `json:"modifier"`
+	Text        string     `json:"text"`
+	DistanceKm  float64    `json:"distance_km"`
+	DurationMin float64    `json:"duration_min"`
+	Location    RoutePoint `json:"location"`
+	StreetName  string     `json:"street_name,omitempty"`
+}
+
+type RoutePoint struct {
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
 }

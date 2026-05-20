@@ -22,6 +22,7 @@ type Edge struct {
 	SpeedKmH          float64
 	TimeHours         float64 // precomputed: DistanceKm / SpeedKmH (car speed)
 	HighwayType       string  // e.g. "primary", "residential"; empty for legacy files
+	Name              string  // OSM way name when available
 	CarAllowed        bool
 	MotorcycleAllowed bool
 	BusAllowed        bool

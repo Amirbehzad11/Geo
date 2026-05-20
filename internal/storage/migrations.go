@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS road_segments (
 ALTER TABLE road_segments
     ADD COLUMN IF NOT EXISTS import_region TEXT NOT NULL DEFAULT '';
 
+ALTER TABLE road_segments
+    ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+
 CREATE INDEX IF NOT EXISTS idx_road_segments_from_node
     ON road_segments (from_node_id);
 

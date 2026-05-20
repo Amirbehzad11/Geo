@@ -12,6 +12,7 @@ var ErrNoPath = errors.New("no path found between the given nodes")
 // PathResult is the output of a successful A* search.
 type PathResult struct {
 	Nodes      []*Node
+	Edges      []Edge
 	DistanceKm float64
 	TimeHours  float64
 }
@@ -100,6 +101,7 @@ func (g *Graph) aStar(
 	timeScore := make(map[int64]float64, initCap)
 	distScore := make(map[int64]float64, initCap)
 	cameFrom := make(map[int64]int64, initCap)
+	cameFromEdge := make(map[int64]Edge, initCap)
 	// closed tracks nodes that have been settled (popped at optimal cost).
 	// The first time a node is popped from the heap it has the best possible
 	// g-cost; subsequent pops are stale lazy-deletion entries and are skipped.
@@ -126,7 +128,7 @@ func (g *Graph) aStar(
 		}
 
 		if cur.nodeID == goalID {
-			return buildPath(g, cameFrom, goalID, distScore[goalID], timeScore[goalID]), nil
+			return buildPath(g, cameFrom, cameFromEdge, goalID, distScore[goalID], timeScore[goalID]), nil
 		}
 		closed[cur.nodeID] = true
 
@@ -157,6 +159,7 @@ func (g *Graph) aStar(
 				timeScore[edge.To] = tentTime
 				distScore[edge.To] = distScore[cur.nodeID] + edge.DistanceKm
 				cameFrom[edge.To] = cur.nodeID
+				cameFromEdge[edge.To] = *edge
 				h := flatDistKm(neighbor.Lat, neighbor.Lng, gLat, gLng, goalCosLat) / heuristicSpeedKmH
 				heap.Push(&pq, &pqItem{
 					nodeID: edge.To,
@@ -202,13 +205,15 @@ func edgeTravelTimeHours(edge *Edge, speedFn func(*Edge) float64) float64 {
 	return edge.DistanceKm / speed
 }
 
-func buildPath(g *Graph, cameFrom map[int64]int64, goalID int64, dist, time float64) *PathResult {
+func buildPath(g *Graph, cameFrom map[int64]int64, cameFromEdge map[int64]Edge, goalID int64, dist, time float64) *PathResult {
 	ids := []int64{goalID}
+	reverseEdges := make([]Edge, 0)
 	for cur := goalID; ; {
 		prev, ok := cameFrom[cur]
 		if !ok {
 			break
 		}
+		reverseEdges = append(reverseEdges, cameFromEdge[cur])
 		ids = append(ids, prev)
 		cur = prev
 	}
@@ -217,5 +222,9 @@ func buildPath(g *Graph, cameFrom map[int64]int64, goalID int64, dist, time floa
 	for i := range ids {
 		nodes[len(ids)-1-i] = g.Nodes[ids[i]]
 	}
-	return &PathResult{Nodes: nodes, DistanceKm: dist, TimeHours: time}
+	edges := make([]Edge, len(reverseEdges))
+	for i := range reverseEdges {
+		edges[len(reverseEdges)-1-i] = reverseEdges[i]
+	}
+	return &PathResult{Nodes: nodes, Edges: edges, DistanceKm: dist, TimeHours: time}
 }

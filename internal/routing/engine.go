@@ -29,10 +29,11 @@ type Point struct {
 
 // Route is the result of a route calculation.
 type Route struct {
-	Distance float64 // km
-	Duration float64 // minutes
-	Points   []Point
-	Polyline string // Google Encoded Polyline
+	Distance     float64 // km
+	Duration     float64 // minutes
+	Points       []Point
+	Polyline     string // Google Encoded Polyline
+	Instructions []Instruction
 }
 
 // Engine wraps the graph router with an automatic Haversine fallback.
@@ -286,10 +287,11 @@ func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLn
 	}
 
 	return &Route{
-		Distance: utils.Round(distance, 3),
-		Duration: utils.Round(duration, 2),
-		Points:   points,
-		Polyline: EncodePolyline(points),
+		Distance:     utils.Round(distance, 3),
+		Duration:     utils.Round(duration, 2),
+		Points:       points,
+		Polyline:     EncodePolyline(points),
+		Instructions: buildInstructions(path, mode, Point{Lat: startLat, Lng: startLng}, Point{Lat: endLat, Lng: endLng}, e.fallbackSpeed(mode)),
 	}
 }
 
