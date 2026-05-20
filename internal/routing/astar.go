@@ -51,12 +51,12 @@ func (pq *priorityQueue) Pop() any {
 
 // ---- A* ----
 
-// AStar finds the fastest path from startID to goalID using A*.
+// AStar finds the fastest path from startID to goalID.
 //
 // edgeOK returns false to skip an edge for a transport profile.
 // speedFn returns the effective speed in km/h for the edge.
 func (g *Graph) AStar(startID, goalID int64, edgeOK func(*Edge) bool, speedFn func(*Edge) float64) (*PathResult, error) {
-	return g.aStar(startID, goalID, edgeOK, speedFn, 130, nil, nil)
+	return g.aStar(startID, goalID, edgeOK, speedFn, 0, nil, nil)
 }
 
 func (g *Graph) aStar(
@@ -84,14 +84,14 @@ func (g *Graph) aStar(
 		}, nil
 	}
 
-	if heuristicSpeedKmH <= 0 {
-		heuristicSpeedKmH = 130
-	}
+	useHeuristic := heuristicSpeedKmH > 0
 
-	// Precompute cos(goalLat) once — eliminates one trig call per neighbour
-	// visit in the hot loop. The flat-earth heuristic is ~4× faster than
-	// Haversine and introduces < 0.3% error at distances under 400 km.
-	goalCosLat := math.Cos(goalNode.Lat * (math.Pi / 180))
+	// A zero heuristic runs exact Dijkstra search. Positive values keep the
+	// optional A* heuristic path for callers that explicitly choose it.
+	goalCosLat := 0.0
+	if useHeuristic {
+		goalCosLat = math.Cos(goalNode.Lat * (math.Pi / 180))
+	}
 	gLat, gLng := goalNode.Lat, goalNode.Lng
 
 	// Pre-allocate maps with a realistic initial capacity to minimise rehashing.
@@ -114,7 +114,7 @@ func (g *Graph) aStar(
 	heap.Push(&pq, &pqItem{
 		nodeID: startID,
 		gCost:  0,
-		fCost:  flatDistKm(startNode.Lat, startNode.Lng, gLat, gLng, goalCosLat) / heuristicSpeedKmH,
+		fCost:  heuristicHours(startNode, gLat, gLng, goalCosLat, heuristicSpeedKmH, useHeuristic),
 	})
 
 	for pq.Len() > 0 {
@@ -160,7 +160,7 @@ func (g *Graph) aStar(
 				distScore[edge.To] = distScore[cur.nodeID] + edge.DistanceKm
 				cameFrom[edge.To] = cur.nodeID
 				cameFromEdge[edge.To] = *edge
-				h := flatDistKm(neighbor.Lat, neighbor.Lng, gLat, gLng, goalCosLat) / heuristicSpeedKmH
+				h := heuristicHours(neighbor, gLat, gLng, goalCosLat, heuristicSpeedKmH, useHeuristic)
 				heap.Push(&pq, &pqItem{
 					nodeID: edge.To,
 					gCost:  tentTime,
@@ -171,6 +171,13 @@ func (g *Graph) aStar(
 	}
 
 	return nil, ErrNoPath
+}
+
+func heuristicHours(n *Node, goalLat, goalLng, goalCosLat, heuristicSpeedKmH float64, enabled bool) float64 {
+	if !enabled {
+		return 0
+	}
+	return flatDistKm(n.Lat, n.Lng, goalLat, goalLng, goalCosLat) / heuristicSpeedKmH
 }
 
 // flatDistKm returns a fast flat-earth distance approximation in km.

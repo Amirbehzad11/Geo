@@ -51,6 +51,14 @@ func TestCarRouteOptimizesFastestTimeNotShortestDistance(t *testing.T) {
 	}
 }
 
+func TestRoutingProfilesUseExactSearchByDefault(t *testing.T) {
+	for mode, profile := range profiles {
+		if profile.heuristicSpeedKmH != 0 {
+			t.Fatalf("profile %s should use exact Dijkstra search by default, got heuristic %.2f", mode, profile.heuristicSpeedKmH)
+		}
+	}
+}
+
 func TestLongDistanceCarRouteDoesNotFilterMinorRoads(t *testing.T) {
 	g := NewGraph()
 	addNode(g, 1, 0, 0)

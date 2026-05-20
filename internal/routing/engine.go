@@ -117,7 +117,7 @@ var profiles = map[TransportMode]modeProfile{
 		edgeAllowed:       func(e *Edge) bool { return e.CarAllowed },
 		edgeSpeed:         nil,
 		fallbackSpeed:     0, // engine uses avgSpeedKmH
-		heuristicSpeedKmH: 130,
+		heuristicSpeedKmH: 0,
 	},
 	ModeMotorcycle: {
 		edgeAllowed: func(e *Edge) bool { return e.MotorcycleAllowed },
@@ -128,7 +128,7 @@ var profiles = map[TransportMode]modeProfile{
 			return e.SpeedKmH * 1.1
 		},
 		fallbackSpeed:     60,
-		heuristicSpeedKmH: 130,
+		heuristicSpeedKmH: 0,
 	},
 	ModeBus: {
 		edgeAllowed: func(e *Edge) bool { return e.BusAllowed || e.CarAllowed },
@@ -139,13 +139,13 @@ var profiles = map[TransportMode]modeProfile{
 			return e.SpeedKmH * 0.8
 		},
 		fallbackSpeed:     65,
-		heuristicSpeedKmH: 100,
+		heuristicSpeedKmH: 0,
 	},
 	ModeWalking: {
 		edgeAllowed:       walkingAllowed,
 		edgeSpeed:         walkingSpeed,
 		fallbackSpeed:     5,
-		heuristicSpeedKmH: 6,
+		heuristicSpeedKmH: 0,
 	},
 }
 
