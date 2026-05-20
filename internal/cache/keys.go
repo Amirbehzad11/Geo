@@ -2,7 +2,7 @@ package cache
 
 import "fmt"
 
-const routeCacheVersion = "v5-pedestrian-routing"
+const routeCacheVersion = "v6-exact-routing"
 
 // Key builders — single source of truth for all Redis key patterns.
 

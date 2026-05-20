@@ -114,7 +114,7 @@ type modeProfile struct {
 var profiles = map[TransportMode]modeProfile{
 	ModeCar: {
 		edgeAllowed:       func(e *Edge) bool { return e.CarAllowed },
-		edgeSpeed:         func(e *Edge) float64 { return e.SpeedKmH },
+		edgeSpeed:         nil,
 		fallbackSpeed:     0, // engine uses avgSpeedKmH
 		heuristicSpeedKmH: 130,
 	},
@@ -232,112 +232,34 @@ func walkingSpeed(e *Edge) float64 {
 
 // ---- route builders ----
 
-// longDistanceThresholdKm is the straight-line distance above which graphRoutes
-// switches to a highway-only edge filter before trying the full road network.
-// Routing Tehran→Isfahan (~340 km) on the full 14 M-node graph can take 10-15 s;
-// restricting to motorway/trunk/primary/secondary cuts the search space by ~90 %
-// and brings latency under 200 ms for most inter-city pairs.
-const longDistanceThresholdKm = 25.0
-const majorRoadConnectorSnapKm = 5.0
-
 func (e *Engine) graphRoutes(startLat, startLng, endLat, endLng float64, mode TransportMode, k int) []*Route {
 	p, ok := profiles[mode]
 	if !ok {
 		return nil
 	}
 
-	// For long-distance vehicle routes, try a highway-only filter first.
-	// Walking always needs the full network (footpaths, pedestrian zones, etc.).
-	if mode != ModeWalking {
-		dist := utils.Haversine(startLat, startLng, endLat, endLng)
-		if dist >= longDistanceThresholdKm {
-			k = 1
-			if route := e.runLongDistanceAstar(startLat, startLng, endLat, endLng, p); route != nil {
-				return []*Route{route}
-			}
-			// Hybrid routing failed; fall through to full-network search below.
-		}
-	}
-
-	return e.runAstar(startLat, startLng, endLat, endLng, k, p, p.edgeAllowed)
-}
-
-// highwayOnlyFilter wraps edgeAllowed to additionally require the edge to be
-// on a major road class. This excludes residential, service, tertiary, footway
-// and other minor OSM ways from A* exploration for inter-city routes.
-func highwayOnlyFilter(edgeAllowed func(*Edge) bool) func(*Edge) bool {
-	return func(e *Edge) bool {
-		if !edgeAllowed(e) {
-			return false
-		}
-		switch e.HighwayType {
-		case "motorway", "motorway_link",
-			"trunk", "trunk_link",
-			"primary", "primary_link",
-			"secondary", "secondary_link":
-			return true
-		}
-		return false
-	}
-}
-
-func (e *Engine) runLongDistanceAstar(startLat, startLng, endLat, endLng float64, p modeProfile) *Route {
 	startNode := e.graph.NearestRoutableNodeWithin(startLat, startLng, snapThresholdKm, p.edgeAllowed)
 	endNode := e.graph.NearestRoutableNodeWithin(endLat, endLng, snapThresholdKm, p.edgeAllowed)
 	if startNode == nil || endNode == nil {
 		return nil
 	}
 
-	hwAllowed := highwayOnlyFilter(p.edgeAllowed)
-	startMajor := e.graph.NearestRoutableNodeWithin(startNode.Lat, startNode.Lng, majorRoadConnectorSnapKm, hwAllowed)
-	endMajor := e.graph.NearestRoutableNodeWithin(endNode.Lat, endNode.Lng, majorRoadConnectorSnapKm, hwAllowed)
-	if startMajor == nil || endMajor == nil {
-		return nil
-	}
-
-	startLeg, err := e.graph.fastestPath(startNode.ID, startMajor.ID, p.edgeAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
-	if err != nil {
-		return nil
-	}
-	highwayLeg, err := e.graph.fastestPath(startMajor.ID, endMajor.ID, hwAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
-	if err != nil {
-		return nil
-	}
-	endLeg, err := e.graph.fastestPath(endMajor.ID, endNode.ID, p.edgeAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
-	if err != nil {
-		return nil
-	}
-
-	path := combinePathResults(startLeg, highwayLeg, endLeg)
-	if path == nil {
-		return nil
-	}
-	return e.pathToRoute(path, startLat, startLng, endLat, endLng, p)
-}
-
-func (e *Engine) runAstar(startLat, startLng, endLat, endLng float64, k int, p modeProfile, edgeAllowed func(*Edge) bool) []*Route {
-	startNode := e.graph.NearestRoutableNodeWithin(startLat, startLng, snapThresholdKm, edgeAllowed)
-	endNode := e.graph.NearestRoutableNodeWithin(endLat, endLng, snapThresholdKm, edgeAllowed)
-	if startNode == nil || endNode == nil {
-		return nil
-	}
-
-	paths, err := e.graph.KFastestPaths(startNode.ID, endNode.ID, k, edgeAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
+	paths, err := e.graph.KFastestPaths(startNode.ID, endNode.ID, k, p.edgeAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
 	if err != nil {
 		if !errors.Is(err, ErrNoPath) {
-			log.Printf("[routing] A* error: %v", err)
+			log.Printf("[routing] A* error (%s): %v", mode, err)
 		}
 		return nil
 	}
 
 	routes := make([]*Route, 0, len(paths))
 	for _, path := range paths {
-		routes = append(routes, e.pathToRoute(path, startLat, startLng, endLat, endLng, p))
+		routes = append(routes, e.pathToRoute(path, startLat, startLng, endLat, endLng, mode))
 	}
 	return routes
 }
 
-func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLng float64, p modeProfile) *Route {
+func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLng float64, mode TransportMode) *Route {
 	points := make([]Point, 0, len(path.Nodes)+2)
 	appendPoint(&points, Point{Lat: startLat, Lng: startLng})
 	for _, n := range path.Nodes {
@@ -357,24 +279,10 @@ func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLn
 
 	duration := path.TimeHours * 60
 	if snapDistance > 0 {
-		spd := p.fallbackSpeed
-		if spd <= 0 {
-			spd = e.avgSpeedKmH
-		}
-		if spd <= 0 {
-			spd = 40
-		}
-		duration += (snapDistance / spd) * 60
+		duration += (snapDistance / e.fallbackSpeed(mode)) * 60
 	}
 	if duration == 0 && distance > 0 {
-		spd := p.fallbackSpeed
-		if spd <= 0 {
-			spd = e.avgSpeedKmH
-		}
-		if spd <= 0 {
-			spd = 40
-		}
-		duration = (distance / spd) * 60
+		duration = (distance / e.fallbackSpeed(mode)) * 60
 	}
 
 	return &Route{
@@ -383,44 +291,6 @@ func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLn
 		Points:   points,
 		Polyline: EncodePolyline(points),
 	}
-}
-
-func (g *Graph) fastestPath(startID, goalID int64, edgeOK func(*Edge) bool, speedFn func(*Edge) float64, heuristicSpeedKmH float64) (*PathResult, error) {
-	if startID == goalID {
-		node, ok := g.Nodes[startID]
-		if !ok {
-			return nil, errors.New("node not in graph")
-		}
-		return &PathResult{Nodes: []*Node{node}}, nil
-	}
-	paths, err := g.KFastestPaths(startID, goalID, 1, edgeOK, speedFn, heuristicSpeedKmH)
-	if err != nil {
-		return nil, err
-	}
-	if len(paths) == 0 {
-		return nil, ErrNoPath
-	}
-	return paths[0], nil
-}
-
-func combinePathResults(paths ...*PathResult) *PathResult {
-	out := &PathResult{}
-	for _, path := range paths {
-		if path == nil || len(path.Nodes) == 0 {
-			continue
-		}
-		if len(out.Nodes) == 0 {
-			out.Nodes = append(out.Nodes, path.Nodes...)
-		} else {
-			out.Nodes = append(out.Nodes, path.Nodes[1:]...)
-		}
-		out.DistanceKm += path.DistanceKm
-		out.TimeHours += path.TimeHours
-	}
-	if len(out.Nodes) == 0 {
-		return nil
-	}
-	return out
 }
 
 func appendPoint(points *[]Point, p Point) {

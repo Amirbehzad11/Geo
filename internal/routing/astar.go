@@ -118,16 +118,20 @@ func (g *Graph) aStar(
 	for pq.Len() > 0 {
 		cur := heap.Pop(&pq).(*pqItem)
 
-		if cur.nodeID == goalID {
-			return buildPath(g, cameFrom, goalID, distScore[goalID], timeScore[goalID]), nil
-		}
-
 		if closed[cur.nodeID] {
 			continue
 		}
+		if best, ok := timeScore[cur.nodeID]; ok && cur.gCost > best {
+			continue
+		}
+
+		if cur.nodeID == goalID {
+			return buildPath(g, cameFrom, goalID, distScore[goalID], timeScore[goalID]), nil
+		}
 		closed[cur.nodeID] = true
 
-		for _, edge := range g.Edges[cur.nodeID] {
+		for i := range g.Edges[cur.nodeID] {
+			edge := &g.Edges[cur.nodeID][i]
 			// Skip already-settled neighbours — no shorter path can exist.
 			if closed[edge.To] {
 				continue
@@ -138,7 +142,7 @@ func (g *Graph) aStar(
 			if blockedEdges != nil && blockedEdges[EdgeKey{From: cur.nodeID, To: edge.To}] {
 				continue
 			}
-			if edgeOK != nil && !edgeOK(&edge) {
+			if edgeOK != nil && !edgeOK(edge) {
 				continue
 			}
 			neighbor, exists := g.Nodes[edge.To]
@@ -146,15 +150,7 @@ func (g *Graph) aStar(
 				continue
 			}
 
-			speed := edge.SpeedKmH
-			if speedFn != nil {
-				speed = speedFn(&edge)
-			}
-			if speed <= 0 || math.IsNaN(speed) || math.IsInf(speed, 0) {
-				speed = 40
-			}
-
-			edgeTime := edge.DistanceKm / speed
+			edgeTime := edgeTravelTimeHours(edge, speedFn)
 			tentTime := timeScore[cur.nodeID] + edgeTime
 			prev, seen := timeScore[edge.To]
 			if !seen || tentTime < prev {
@@ -189,6 +185,21 @@ func flatDistKm(lat1, lng1, lat2, lng2, cosLat2 float64) float64 {
 	dlat := (lat2 - lat1) * kmPerDeg
 	dlng := (lng2 - lng1) * kmPerDeg * cosLat2
 	return math.Sqrt(dlat*dlat + dlng*dlng)
+}
+
+func edgeTravelTimeHours(edge *Edge, speedFn func(*Edge) float64) float64 {
+	if speedFn == nil && edge.TimeHours > 0 && !math.IsNaN(edge.TimeHours) && !math.IsInf(edge.TimeHours, 0) {
+		return edge.TimeHours
+	}
+
+	speed := edge.SpeedKmH
+	if speedFn != nil {
+		speed = speedFn(edge)
+	}
+	if speed <= 0 || math.IsNaN(speed) || math.IsInf(speed, 0) {
+		speed = 40
+	}
+	return edge.DistanceKm / speed
 }
 
 func buildPath(g *Graph, cameFrom map[int64]int64, goalID int64, dist, time float64) *PathResult {

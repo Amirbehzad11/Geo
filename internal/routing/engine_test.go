@@ -50,6 +50,29 @@ func TestCarRouteOptimizesFastestTimeNotShortestDistance(t *testing.T) {
 	}
 }
 
+func TestLongDistanceCarRouteDoesNotFilterMinorRoads(t *testing.T) {
+	g := NewGraph()
+	addNode(g, 1, 0, 0)
+	addNode(g, 2, 0, 0.25)
+	addNode(g, 3, 0.25, 0)
+	addNode(g, 4, 0, 0.50)
+
+	addEdge(g, 1, 2, 30, 100, "residential", true, true, true, true)
+	addEdge(g, 2, 4, 30, 100, "residential", true, true, true, true)
+	addEdge(g, 1, 3, 40, 30, "primary", true, true, true, false)
+	addEdge(g, 3, 4, 40, 30, "primary", true, true, true, false)
+
+	e := &Engine{graph: g, avgSpeedKmH: 40}
+	route := e.Calculate(0, 0, 0, 0.50, ModeCar)
+
+	if route.Distance != 60 {
+		t.Fatalf("expected exact full-graph route over residential edges, got %.3fkm", route.Distance)
+	}
+	if len(route.Points) != 3 || route.Points[1].Lng != 0.25 {
+		t.Fatalf("expected route through residential node 2, got points=%v", route.Points)
+	}
+}
+
 func TestWalkingCanUsePedestrianEdgesThatCarsCannot(t *testing.T) {
 	g := NewGraph()
 	addNode(g, 1, 0, 0)

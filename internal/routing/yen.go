@@ -109,15 +109,8 @@ func (g *Graph) combineRootAndSpur(
 		if !ok {
 			return nil, false
 		}
-		speed := edge.SpeedKmH
-		if speedFn != nil {
-			speed = speedFn(edge)
-		}
-		if speed <= 0 {
-			speed = 40
-		}
 		dist += edge.DistanceKm
-		hours += edge.DistanceKm / speed
+		hours += edgeTravelTimeHours(edge, speedFn)
 	}
 
 	return &PathResult{
