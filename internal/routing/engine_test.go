@@ -158,8 +158,8 @@ func TestInstructionsCollapseStraightContinuesUntilNextStreet(t *testing.T) {
 	if continueCount != 1 {
 		t.Fatalf("expected one collapsed continue instruction, got %d: %+v", continueCount, route.Instructions)
 	}
-	if !strings.Contains(continueText, "D Street") {
-		t.Fatalf("expected continue text to mention next street, got %q", continueText)
+	if !strings.Contains(continueText, "پس از") || !strings.Contains(continueText, "به چپ بپیچید") || !strings.Contains(continueText, "D Street") {
+		t.Fatalf("expected continue text to mention distance and next turn, got %q", continueText)
 	}
 }
 

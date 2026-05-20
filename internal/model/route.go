@@ -19,7 +19,7 @@ type RouteResponse struct {
 
 	Mode    string        `json:"mode"`
 	Primary RouteOption   `json:"primary"`
-	Routes  []RouteOption `json:"routes"`
+	Routes  []RouteOption `json:"-"`
 }
 
 type RouteOption struct {

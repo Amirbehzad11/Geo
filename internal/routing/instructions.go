@@ -107,12 +107,12 @@ func buildInstructions(path *PathResult, mode TransportMode, start, end Point, f
 		}
 
 		distanceKm, durationMin := instructionLeg(path, m.nodeIndex, nextManeuverNode(maneuvers, i), mode, fallbackSpeedKmH)
-		until := nextInstructionTarget(maneuvers, i)
+		next := nextInstructionManeuver(maneuvers, i)
 		inst := Instruction{
 			Index:       i,
 			Type:        m.typ,
 			Modifier:    m.modifier,
-			Text:        instructionText(m.typ, m.modifier, m.street, until),
+			Text:        instructionText(m.typ, m.modifier, m.street, distanceKm, next),
 			DistanceKm:  utils.Round(distanceKm, 3),
 			DurationMin: utils.Round(durationMin, 2),
 			Location:    location,
@@ -122,6 +122,13 @@ func buildInstructions(path *PathResult, mode TransportMode, start, end Point, f
 	}
 
 	return out
+}
+
+func nextInstructionManeuver(maneuvers []maneuver, i int) maneuver {
+	if i+1 >= len(maneuvers) {
+		return maneuver{}
+	}
+	return maneuvers[i+1]
 }
 
 func arrivalInstruction(index int, p Point) Instruction {
@@ -146,18 +153,6 @@ func collapseContinues(in []maneuver) []maneuver {
 		out = append(out, m)
 	}
 	return out
-}
-
-func nextInstructionTarget(maneuvers []maneuver, i int) string {
-	for j := i + 1; j < len(maneuvers); j++ {
-		if maneuvers[j].typ == "arrive" {
-			return "destination"
-		}
-		if maneuvers[j].street != "" {
-			return maneuvers[j].street
-		}
-	}
-	return ""
 }
 
 func nextManeuverNode(maneuvers []maneuver, i int) int {
@@ -273,23 +268,16 @@ func isUnnamedLink(edge Edge) bool {
 	return strings.TrimSpace(edge.Name) == "" && strings.HasSuffix(strings.TrimSpace(edge.HighwayType), "_link")
 }
 
-func instructionText(typ, modifier, street, until string) string {
+func instructionText(typ, modifier, street string, distanceKm float64, next maneuver) string {
 	target := ""
 	if street != "" {
 		target = " به " + street
 	}
-	untilText := instructionUntilText(until)
 	switch typ {
 	case "depart":
-		if street != "" {
-			return "حرکت را در " + street + " شروع کنید" + untilText
-		}
-		return "حرکت را شروع کنید" + untilText
+		return leadInstructionText("حرکت را شروع کنید", distanceKm, next)
 	case "continue":
-		if street != "" {
-			return "در " + street + " ادامه دهید" + untilText
-		}
-		return "مستقیم ادامه دهید" + untilText
+		return leadInstructionText("مستقیم ادامه دهید", distanceKm, next)
 	case "uturn":
 		return "دور بزنید" + target
 	case "turn":
@@ -301,15 +289,43 @@ func instructionText(typ, modifier, street, until string) string {
 	}
 }
 
-func instructionUntilText(until string) string {
-	switch until {
-	case "":
-		return ""
-	case "destination":
-		return " تا مقصد"
-	default:
-		return " تا " + until
+func leadInstructionText(prefix string, distanceKm float64, next maneuver) string {
+	nextAction := nextActionText(next)
+	if nextAction == "" {
+		return prefix
 	}
+	return fmt.Sprintf("%s؛ پس از %s %s", prefix, formatInstructionDistance(distanceKm), nextAction)
+}
+
+func nextActionText(next maneuver) string {
+	target := ""
+	if next.street != "" {
+		target = " به " + next.street
+	}
+	switch next.typ {
+	case "turn":
+		return persianTurn(next.modifier) + target
+	case "uturn":
+		return "دور بزنید" + target
+	case "arrive":
+		return "به مقصد می‌رسید"
+	default:
+		return ""
+	}
+}
+
+func formatInstructionDistance(distanceKm float64) string {
+	if distanceKm < 1 {
+		meters := int(math.Round(distanceKm * 1000))
+		if meters < 1 {
+			meters = 1
+		}
+		return fmt.Sprintf("%d متر", meters)
+	}
+	if distanceKm < 10 {
+		return fmt.Sprintf("%.1f کیلومتر", utils.Round(distanceKm, 1))
+	}
+	return fmt.Sprintf("%.0f کیلومتر", math.Round(distanceKm))
 }
 
 func persianTurn(modifier string) string {
