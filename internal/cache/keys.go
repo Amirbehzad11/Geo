@@ -6,7 +6,7 @@ import "fmt"
 // Increment this string whenever the cached RouteResponse structure changes
 // or when a new routing backend is introduced, so old entries are naturally
 // invalidated without a manual FLUSHALL.
-const routeCacheVersion = "v12-osrm-ready"
+const routeCacheVersion = "v14-ground-astar-timeout"
 
 // Key builders — single source of truth for all Redis key patterns.
 

@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"math"
 	"strings"
 	"testing"
@@ -12,17 +13,29 @@ func addNode(g *Graph, id int64, lat, lng float64) {
 	g.AddNode(&Node{ID: id, Lat: lat, Lng: lng})
 }
 
+// addEdge constructs a compact Edge from the legacy bool-based signature so
+// that existing test call-sites remain unchanged while using the new struct.
 func addEdge(g *Graph, from, to int64, dist, speed float64, highway string, car, motorcycle, bus, foot bool) {
+	var flags AccessFlags
+	if car {
+		flags |= FlagCar
+	}
+	if motorcycle {
+		flags |= FlagMotorcycle
+	}
+	if bus {
+		flags |= FlagBus
+	}
+	if foot {
+		flags |= FlagFoot
+	}
 	g.AddEdge(from, Edge{
-		To:                to,
-		DistanceKm:        dist,
-		SpeedKmH:          speed,
-		TimeHours:         dist / speed,
-		HighwayType:       highway,
-		CarAllowed:        car,
-		MotorcycleAllowed: motorcycle,
-		BusAllowed:        bus,
-		FootAllowed:       foot,
+		To:         to,
+		DistanceKm: dist,
+		SpeedKmH:   float32(speed),
+		TimeHours:  float32(dist / speed),
+		Kind:       ParseHighwayKind(highway),
+		Flags:      flags,
 	})
 }
 
@@ -51,11 +64,27 @@ func TestCarRouteOptimizesFastestTimeNotShortestDistance(t *testing.T) {
 	}
 }
 
-func TestRoutingProfilesUseExactSearchByDefault(t *testing.T) {
+func TestRoutingProfilesUseAdmissibleHeuristicByDefault(t *testing.T) {
 	for mode, profile := range profiles {
-		if profile.heuristicSpeedKmH != 0 {
-			t.Fatalf("profile %s should use exact Dijkstra search by default, got heuristic %.2f", mode, profile.heuristicSpeedKmH)
+		if profile.heuristicSpeedKmH <= 0 {
+			t.Fatalf("profile %s should use an A* heuristic by default", mode)
 		}
+	}
+}
+
+func TestCalculateAlternativesCtxCancelledDoesNotReturnGroundFallback(t *testing.T) {
+	g := NewGraph()
+	addNode(g, 1, 0, 0)
+	addNode(g, 2, 0, 0.01)
+	addEdge(g, 1, 2, 1, 60, "residential", true, true, true, true)
+
+	e := &Engine{graph: g, avgSpeedKmH: 40}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	routes := e.CalculateAlternativesCtx(ctx, 0, 0, 0, 0.01, ModeCar, 1)
+	if len(routes) != 0 {
+		t.Fatalf("expected no fallback route after context cancellation, got %d", len(routes))
 	}
 }
 
@@ -89,9 +118,9 @@ func TestCarRouteIncludesTurnByTurnInstructions(t *testing.T) {
 	addNode(g, 3, 0.01, 0.01)
 
 	addEdge(g, 1, 2, 1, 60, "residential", true, true, true, true)
-	g.Edges[1][0].Name = "First St"
+	g.SetEdgeName(1, 0, "First St")
 	addEdge(g, 2, 3, 1, 60, "primary", true, true, true, true)
-	g.Edges[2][0].Name = "Second St"
+	g.SetEdgeName(2, 0, "Second St")
 
 	e := &Engine{graph: g, avgSpeedKmH: 40}
 	route := e.Calculate(0, 0, 0.01, 0.01, ModeCar)
@@ -119,11 +148,11 @@ func TestInstructionsHideUnnamedLinkRoadClasses(t *testing.T) {
 	addNode(g, 5, 0.001, 0.02)
 
 	addEdge(g, 1, 2, 1, 60, "primary", true, true, true, false)
-	g.Edges[1][0].Name = "Main Road"
+	g.SetEdgeName(1, 0, "Main Road")
 	addEdge(g, 2, 3, 0.015, 40, "primary_link", true, true, true, false)
 	addEdge(g, 3, 4, 0.011, 40, "primary_link", true, true, true, false)
 	addEdge(g, 4, 5, 1, 60, "primary", true, true, true, false)
-	g.Edges[4][0].Name = "Main Road"
+	g.SetEdgeName(4, 0, "Main Road")
 
 	e := &Engine{graph: g, avgSpeedKmH: 40}
 	route := e.Calculate(0, 0, 0.001, 0.02, ModeCar)
@@ -144,13 +173,13 @@ func TestInstructionsCollapseStraightContinuesUntilNextStreet(t *testing.T) {
 	addNode(g, 5, 0.01, 0.03)
 
 	addEdge(g, 1, 2, 1, 60, "residential", true, true, true, true)
-	g.Edges[1][0].Name = "A Street"
+	g.SetEdgeName(1, 0, "A Street")
 	addEdge(g, 2, 3, 1, 60, "residential", true, true, true, true)
-	g.Edges[2][0].Name = "B Street"
+	g.SetEdgeName(2, 0, "B Street")
 	addEdge(g, 3, 4, 1, 60, "residential", true, true, true, true)
-	g.Edges[3][0].Name = "C Street"
+	g.SetEdgeName(3, 0, "C Street")
 	addEdge(g, 4, 5, 1, 60, "primary", true, true, true, true)
-	g.Edges[4][0].Name = "D Street"
+	g.SetEdgeName(4, 0, "D Street")
 
 	e := &Engine{graph: g, avgSpeedKmH: 40}
 	route := e.Calculate(0, 0, 0.01, 0.03, ModeCar)
@@ -288,7 +317,7 @@ func TestCalculate_Car_UsesGraph(t *testing.T) {
 	addEdge(g, 1, 2, 1.0, 60, "residential", true, true, true, true)
 	addEdge(g, 2, 3, 1.0, 60, "residential", true, true, true, true)
 
-	e := NewEngineWithGraph(40, g)
+	e := NewEngineWithGraph(40, g, 0)
 	route := e.Calculate(0.000, 0.000, 0.000, 0.018, ModeCar)
 
 	// A graph route through nodes 1→2→3 should have at least 3 points (including start, mid, end).
@@ -311,7 +340,7 @@ func TestCalculate_Airplane_AlwaysFlightArc(t *testing.T) {
 	addNode(g, 2, 36.0, 52.0)
 	addEdge(g, 1, 2, 150, 800, "primary", true, true, true, false)
 
-	e := NewEngineWithGraph(40, g)
+	e := NewEngineWithGraph(40, g, 0)
 	route := e.Calculate(35.0, 51.0, 36.0, 52.0, ModeAirplane)
 
 	// Arc has n+2 = 52 points (50 intermediate + 2 endpoints).
@@ -337,10 +366,10 @@ func TestCalculate_Walking_BlocksMotorway(t *testing.T) {
 	// Motorway stays blocked for walking even if imported data marks foot_allowed.
 	addEdge(g, 1, 2, 1, 120, "motorway", true, true, true, true)
 
-	e := NewEngineWithGraph(40, g)
+	e := NewEngineWithGraph(40, g, 0)
 	route := e.Calculate(0.000, 0.000, 0.000, 0.009, ModeWalking)
 
-	// No walkable path → haversine fallback → exactly 2 extra-interpolated points
+	// No walkable path falls back to a straight Haversine estimate.
 	if route == nil {
 		t.Fatal("expected haversine fallback route, got nil")
 	}
@@ -362,9 +391,8 @@ func TestCalculate_FallsBackToHaversine_WhenNoGraph(t *testing.T) {
 	if route.Distance < 300 || route.Distance > 400 {
 		t.Fatalf("Haversine fallback distance out of range: %.2f km", route.Distance)
 	}
-	// Haversine interpolate produces n+2 = 14 points.
-	if len(route.Points) < 2 {
-		t.Fatalf("expected interpolated points, got %d", len(route.Points))
+	if len(route.Points) != 2 {
+		t.Fatalf("expected straight fallback with 2 points, got %d", len(route.Points))
 	}
 }
 
@@ -385,7 +413,7 @@ func TestCalculateAlternatives_Returns3Routes(t *testing.T) {
 	addEdge(g, 1, 5, 3, 70, "tertiary", true, true, true, true)
 	addEdge(g, 5, 4, 3, 70, "tertiary", true, true, true, true)
 
-	e := NewEngineWithGraph(40, g)
+	e := NewEngineWithGraph(40, g, 0)
 	routes := e.CalculateAlternatives(0, 0, 0, 0.02, ModeCar, 3)
 
 	if len(routes) != 3 {

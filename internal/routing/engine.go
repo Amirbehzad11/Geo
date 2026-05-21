@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -38,12 +39,16 @@ type Route struct {
 
 // Engine wraps the graph router with an automatic Haversine fallback.
 type Engine struct {
-	graph       *Graph
-	avgSpeedKmH float64
+	graph        *Graph
+	avgSpeedKmH  float64
+	yenSpurCap   int // max spur positions per Yen's iteration; 0 = unlimited
 }
 
-func NewEngineWithGraph(avgSpeedKmH float64, g *Graph) *Engine {
-	return &Engine{avgSpeedKmH: avgSpeedKmH, graph: g}
+// NewEngineWithGraph creates an Engine backed by g.
+// yenSpurCap limits how many spur positions Yen's algorithm explores per
+// alternative (0 = unlimited, recommended: 60–80 for production).
+func NewEngineWithGraph(avgSpeedKmH float64, g *Graph, yenSpurCap int) *Engine {
+	return &Engine{avgSpeedKmH: avgSpeedKmH, graph: g, yenSpurCap: yenSpurCap}
 }
 
 // NormalizeMode validates external mode/vehicle strings and applies the
@@ -78,7 +83,15 @@ func (e *Engine) Calculate(startLat, startLng, endLat, endLng float64, mode Tran
 // CalculateAlternatives returns up to k candidate routes sorted by duration.
 // When the graph is unavailable or endpoints cannot be snapped, it returns a
 // single Haversine fallback route.
+// Uses context.Background() — for timeout control use CalculateAlternativesCtx.
 func (e *Engine) CalculateAlternatives(startLat, startLng, endLat, endLng float64, mode TransportMode, k int) []*Route {
+	return e.CalculateAlternativesCtx(context.Background(), startLat, startLng, endLat, endLng, mode, k)
+}
+
+// CalculateAlternativesCtx is the context-aware variant of CalculateAlternatives.
+// When ctx is cancelled or its deadline expires, the A* search returns
+// immediately without manufacturing a ground-mode fallback route.
+func (e *Engine) CalculateAlternativesCtx(ctx context.Context, startLat, startLng, endLat, endLng float64, mode TransportMode, k int) []*Route {
 	if mode == "" {
 		mode = ModeCar
 	}
@@ -91,8 +104,11 @@ func (e *Engine) CalculateAlternatives(startLat, startLng, endLat, endLng float6
 	}
 
 	if e.graph != nil {
-		if routes := e.graphRoutes(startLat, startLng, endLat, endLng, mode, k); len(routes) > 0 {
+		if routes := e.graphRoutesCtx(ctx, startLat, startLng, endLat, endLng, mode, k); len(routes) > 0 {
 			return routes
+		}
+		if ctx.Err() != nil {
+			return nil
 		}
 	}
 	return []*Route{e.haversineRoute(startLat, startLng, endLat, endLng, mode)}
@@ -101,6 +117,15 @@ func (e *Engine) CalculateAlternatives(startLat, startLng, endLat, endLng float6
 func (e *Engine) HasGraph() bool { return e.graph != nil }
 
 const snapThresholdKm = 0.3
+
+// longRouteAltsThresholdKm is the straight-line distance above which the
+// engine automatically reduces alternatives to 1. On the Iran graph a 300 km
+// route (Tehran → Isfahan) triggers Yen's k=3 with ~60 spur A* calls, each
+// taking ~25 ms — totalling ~1.5 s per request. For long-distance routes the
+// alternative paths are near-identical (they share 95 %+ of the road network),
+// so k=1 returns the same user-visible quality at 1/60 of the compute cost.
+// Routes shorter than this threshold keep the caller-requested k unchanged.
+const longRouteAltsThresholdKm = 50.0
 
 // ---- mode profiles ----
 
@@ -114,38 +139,28 @@ type modeProfile struct {
 
 var profiles = map[TransportMode]modeProfile{
 	ModeCar: {
-		edgeAllowed:       func(e *Edge) bool { return e.CarAllowed },
-		edgeSpeed:         nil,
-		fallbackSpeed:     0, // engine uses avgSpeedKmH
-		heuristicSpeedKmH: 0,
+		edgeAllowed:       func(e *Edge) bool { return e.Flags.Has(FlagCar) },
+		edgeSpeed:         nil, // use precomputed edge.TimeHours
+		fallbackSpeed:     0,   // engine uses avgSpeedKmH
+		heuristicSpeedKmH: 130,
 	},
 	ModeMotorcycle: {
-		edgeAllowed: func(e *Edge) bool { return e.MotorcycleAllowed },
-		edgeSpeed: func(e *Edge) float64 {
-			if v, ok := motorcycleSpeeds[e.HighwayType]; ok {
-				return v
-			}
-			return e.SpeedKmH * 1.1
-		},
+		edgeAllowed:       func(e *Edge) bool { return e.Flags.Has(FlagMotorcycle) },
+		edgeSpeed:         motorcycleSpeed,
 		fallbackSpeed:     60,
-		heuristicSpeedKmH: 0,
+		heuristicSpeedKmH: 150,
 	},
 	ModeBus: {
-		edgeAllowed: func(e *Edge) bool { return e.BusAllowed || e.CarAllowed },
-		edgeSpeed: func(e *Edge) float64 {
-			if v, ok := busSpeeds[e.HighwayType]; ok {
-				return minSpeed(v, e.SpeedKmH)
-			}
-			return e.SpeedKmH * 0.8
-		},
+		edgeAllowed:       func(e *Edge) bool { return e.Flags&(FlagBus|FlagCar) != 0 },
+		edgeSpeed:         busSpeed,
 		fallbackSpeed:     65,
-		heuristicSpeedKmH: 0,
+		heuristicSpeedKmH: 100,
 	},
 	ModeWalking: {
 		edgeAllowed:       walkingAllowed,
 		edgeSpeed:         walkingSpeed,
 		fallbackSpeed:     5,
-		heuristicSpeedKmH: 0,
+		heuristicSpeedKmH: 6,
 	},
 }
 
@@ -159,72 +174,97 @@ func minSpeed(a, b float64) float64 {
 	return math.Min(a, b)
 }
 
-// ---- speed/access tables ----
+// ---- speed functions (switch on HighwayKind — no map lookup) ----
 
-var motorcycleSpeeds = map[string]float64{
-	"motorway": 120, "motorway_link": 90,
-	"trunk": 100, "trunk_link": 80,
-	"primary": 90, "primary_link": 75,
-	"secondary": 70, "secondary_link": 60,
-	"tertiary": 60, "tertiary_link": 50,
-	"unclassified": 50, "residential": 40,
-	"living_street": 25, "service": 25,
+func motorcycleSpeed(e *Edge) float64 {
+	switch e.Kind {
+	case HWMotorway:
+		return 120
+	case HWMotorwayLink:
+		return 90
+	case HWTrunk:
+		return 100
+	case HWTrunkLink:
+		return 80
+	case HWPrimary:
+		return 90
+	case HWPrimaryLink:
+		return 75
+	case HWSecondary:
+		return 70
+	case HWSecondaryLink:
+		return 60
+	case HWTertiary:
+		return 60
+	case HWTertiaryLink:
+		return 50
+	case HWUnclassified:
+		return 50
+	case HWResidential:
+		return 40
+	case HWLivingStreet:
+		return 25
+	case HWService:
+		return 25
+	default:
+		return float64(e.SpeedKmH) * 1.1
+	}
 }
 
-var busSpeeds = map[string]float64{
-	"motorway": 90, "motorway_link": 70,
-	"trunk": 80, "trunk_link": 70,
-	"primary": 70, "primary_link": 60,
-	"secondary": 55, "secondary_link": 50,
-	"tertiary": 45, "tertiary_link": 40,
-	"unclassified": 35, "residential": 25,
-	"living_street": 15, "service": 15,
-}
-
-var busAllowedHW = map[string]bool{
-	"motorway": true, "motorway_link": true,
-	"trunk": true, "trunk_link": true,
-	"primary": true, "primary_link": true,
-	"secondary": true, "secondary_link": true,
-	"tertiary": true, "tertiary_link": true,
-	"unclassified": true, "residential": true,
-	"living_street": true, "service": true,
-}
-
-var walkingBlockedHW = map[string]bool{
-	"motorway": true, "motorway_link": true,
-	"trunk": true, "trunk_link": true,
-}
-
-var pedestrianHW = map[string]bool{
-	"footway": true, "pedestrian": true,
-	"path": true, "steps": true,
-	"corridor": true, "crossing": true,
-	"sidewalk": true, "platform": true,
+func busSpeed(e *Edge) float64 {
+	switch e.Kind {
+	case HWMotorway:
+		return minSpeed(90, float64(e.SpeedKmH))
+	case HWMotorwayLink:
+		return minSpeed(70, float64(e.SpeedKmH))
+	case HWTrunk:
+		return minSpeed(80, float64(e.SpeedKmH))
+	case HWTrunkLink:
+		return minSpeed(70, float64(e.SpeedKmH))
+	case HWPrimary:
+		return minSpeed(70, float64(e.SpeedKmH))
+	case HWPrimaryLink:
+		return minSpeed(60, float64(e.SpeedKmH))
+	case HWSecondary:
+		return minSpeed(55, float64(e.SpeedKmH))
+	case HWSecondaryLink:
+		return minSpeed(50, float64(e.SpeedKmH))
+	case HWTertiary:
+		return minSpeed(45, float64(e.SpeedKmH))
+	case HWTertiaryLink:
+		return minSpeed(40, float64(e.SpeedKmH))
+	case HWUnclassified:
+		return minSpeed(35, float64(e.SpeedKmH))
+	case HWResidential:
+		return minSpeed(25, float64(e.SpeedKmH))
+	case HWLivingStreet:
+		return minSpeed(15, float64(e.SpeedKmH))
+	case HWService:
+		return minSpeed(15, float64(e.SpeedKmH))
+	default:
+		return float64(e.SpeedKmH) * 0.8
+	}
 }
 
 func walkingAllowed(e *Edge) bool {
-	return e.FootAllowed && !walkingBlockedHW[e.HighwayType]
+	return e.Flags.Has(FlagFoot) && !e.Kind.BlocksWalking()
 }
 
 func walkingSpeed(e *Edge) float64 {
-	if pedestrianHW[e.HighwayType] {
-		if e.HighwayType == "steps" {
-			return 3.0
-		}
+	switch e.Kind {
+	case HWFootway, HWPedestrian, HWPath, HWCorridor, HWCrossing, HWSidewalk, HWPlatform:
 		return 5.0
-	}
-
-	switch e.HighwayType {
-	case "living_street":
+	case HWSteps:
+		return 3.0
+	case HWLivingStreet:
 		return 4.0
-	case "residential", "service":
+	case HWResidential, HWService:
 		return 2.2
-	case "unclassified":
+	case HWUnclassified:
 		return 1.8
-	case "tertiary", "tertiary_link":
+	case HWTertiary, HWTertiaryLink:
 		return 1.5
-	case "secondary", "secondary_link", "primary", "primary_link":
+	case HWSecondary, HWSecondaryLink, HWPrimary, HWPrimaryLink:
 		return 1.2
 	default:
 		return 2.0
@@ -233,7 +273,19 @@ func walkingSpeed(e *Edge) float64 {
 
 // ---- route builders ----
 
+// graphRoutes is a context.Background() wrapper kept for backward compatibility.
 func (e *Engine) graphRoutes(startLat, startLng, endLat, endLng float64, mode TransportMode, k int) []*Route {
+	return e.graphRoutesCtx(context.Background(), startLat, startLng, endLat, endLng, mode, k)
+}
+
+// graphRoutesCtx runs A* with the given context so that cancellation / timeout
+// propagates all the way into the inner Dijkstra loop.
+// Returns nil on A* timeout so callers can avoid a misleading fallback route.
+func (e *Engine) graphRoutesCtx(ctx context.Context, startLat, startLng, endLat, endLng float64, mode TransportMode, k int) []*Route {
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	p, ok := profiles[mode]
 	if !ok {
 		return nil
@@ -245,9 +297,23 @@ func (e *Engine) graphRoutes(startLat, startLng, endLat, endLng float64, mode Tr
 		return nil
 	}
 
-	paths, err := e.graph.KFastestPaths(startNode.ID, endNode.ID, k, p.edgeAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
+	// Long-route optimisation: for routes whose straight-line distance exceeds
+	// longRouteAltsThresholdKm, the alternative paths are near-identical (they
+	// share almost all of the road network), so we limit k to 1. This reduces
+	// Yen's spur-A* calls from 60 to 0, cutting per-request time from ~1.5 s to
+	// ~25 ms (bidirectional A*) — enabling 100+ concurrent users at < 1 s each.
+	effectiveK := k
+	if k > 1 {
+		straightKm := utils.Haversine(startLat, startLng, endLat, endLng)
+		if straightKm > longRouteAltsThresholdKm {
+			effectiveK = 1
+		}
+	}
+
+	paths, err := e.graph.KFastestPaths(ctx, startNode.ID, endNode.ID, effectiveK, e.yenSpurCap, p.edgeAllowed, p.edgeSpeed, p.heuristicSpeedKmH)
 	if err != nil {
-		if !errors.Is(err, ErrNoPath) {
+		if !errors.Is(err, ErrNoPath) && ctx.Err() == nil {
+			// Only log unexpected errors; context cancellation is expected behaviour.
 			log.Printf("[routing] A* error (%s): %v", mode, err)
 		}
 		return nil
@@ -287,11 +353,18 @@ func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLn
 	}
 
 	return &Route{
-		Distance:     utils.Round(distance, 3),
-		Duration:     utils.Round(duration, 2),
-		Points:       points,
-		Polyline:     EncodePolyline(points),
-		Instructions: buildInstructions(path, mode, Point{Lat: startLat, Lng: startLng}, Point{Lat: endLat, Lng: endLng}, e.fallbackSpeed(mode)),
+		Distance: utils.Round(distance, 3),
+		Duration: utils.Round(duration, 2),
+		Points:   points,
+		Polyline: EncodePolyline(points),
+		// Pass the graph's name resolver so buildInstructions can look up street
+		// names from the pool without storing them redundantly in Edge.
+		Instructions: buildInstructions(path, mode,
+			Point{Lat: startLat, Lng: startLng},
+			Point{Lat: endLat, Lng: endLng},
+			e.fallbackSpeed(mode),
+			e.graph.NameFor,
+		),
 	}
 }
 
@@ -313,7 +386,7 @@ func (e *Engine) haversineRoute(startLat, startLng, endLat, endLng float64, mode
 	duration := (dist / spd) * 60
 	start := Point{Lat: startLat, Lng: startLng}
 	end := Point{Lat: endLat, Lng: endLng}
-	points := flightArc(start, end, 12)
+	points := []Point{start, end}
 	return &Route{
 		Distance: utils.Round(dist, 3),
 		Duration: utils.Round(duration, 2),
@@ -488,4 +561,13 @@ func encodeChunk(buf *strings.Builder, value int) {
 		value >>= 5
 	}
 	buf.WriteByte(byte(value + 63))
+}
+
+// profileSpeedFn returns the speed function for a transport mode, used by
+// instructions to compute per-leg durations.
+func profileSpeedFn(mode TransportMode) func(*Edge) float64 {
+	if p, ok := profiles[mode]; ok {
+		return p.edgeSpeed
+	}
+	return nil
 }

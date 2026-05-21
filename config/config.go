@@ -26,9 +26,10 @@ type Config struct {
 	// ---- routing backend ----
 	RoutingBackend        string // ROUTING_BACKEND: "internal" (default) | "osrm"
 	OSRMBaseURL           string // OSRM_BASE_URL: e.g. "http://osrm:5000"
-	RoutingTimeoutMs      int64  // ROUTING_TIMEOUT_MS: per-call backend deadline (default 10 000)
+	RoutingTimeoutMs      int64  // ROUTING_TIMEOUT_MS: per-call backend deadline (default 30 000)
 	RoutingMaxInFlight    int    // ROUTING_MAX_IN_FLIGHT: concurrent routing cap (default 100)
 	RoutingQueueTimeoutMs int64  // ROUTING_QUEUE_TIMEOUT_MS: semaphore wait time (default 1 000)
+	RoutingYenSpurCap     int    // ROUTING_YEN_SPUR_CAP: max spur nodes per Yen's iteration (default 60; 0 = unlimited)
 
 	ShipmentDBDriver        string  // SHIPMENT_DB_DRIVER; mysql or postgres/pgx
 	ShipmentDBDSN           string  // SHIPMENT_DB_DSN; direct read-only connection to Laravel DB
@@ -62,8 +63,9 @@ func Load() *Config {
 	}
 
 	routingMaxInFlight, _ := strconv.Atoi(getEnv("ROUTING_MAX_IN_FLIGHT", "100"))
-	routingTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_TIMEOUT_MS", "10000"), 10, 64)
+	routingTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_TIMEOUT_MS", "30000"), 10, 64)
 	routingQueueTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_QUEUE_TIMEOUT_MS", "1000"), 10, 64)
+	routingYenSpurCap, _ := strconv.Atoi(getEnv("ROUTING_YEN_SPUR_CAP", "60"))
 
 	return &Config{
 		Port:               getEnv("PORT", "8080"),
@@ -99,6 +101,7 @@ func Load() *Config {
 		RoutingTimeoutMs:      routingTimeoutMs,
 		RoutingMaxInFlight:    routingMaxInFlight,
 		RoutingQueueTimeoutMs: routingQueueTimeoutMs,
+		RoutingYenSpurCap:     routingYenSpurCap,
 	}
 }
 

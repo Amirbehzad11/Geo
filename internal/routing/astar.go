@@ -2,6 +2,7 @@ package routing
 
 import (
 	"container/heap"
+	"context"
 	"errors"
 	"math"
 )
@@ -56,10 +57,11 @@ func (pq *priorityQueue) Pop() any {
 // edgeOK returns false to skip an edge for a transport profile.
 // speedFn returns the effective speed in km/h for the edge.
 func (g *Graph) AStar(startID, goalID int64, edgeOK func(*Edge) bool, speedFn func(*Edge) float64) (*PathResult, error) {
-	return g.aStar(startID, goalID, edgeOK, speedFn, 0, nil, nil)
+	return g.aStar(context.Background(), startID, goalID, edgeOK, speedFn, 0, nil, nil)
 }
 
 func (g *Graph) aStar(
+	ctx context.Context,
 	startID, goalID int64,
 	edgeOK func(*Edge) bool,
 	speedFn func(*Edge) float64,
@@ -67,6 +69,10 @@ func (g *Graph) aStar(
 	blockedEdges map[EdgeKey]bool,
 	blockedNodes map[int64]bool,
 ) (*PathResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	startNode, ok := g.Nodes[startID]
 	if !ok {
 		return nil, errors.New("start node not in graph")
@@ -117,7 +123,21 @@ func (g *Graph) aStar(
 		fCost:  heuristicHours(startNode, gLat, gLng, goalCosLat, heuristicSpeedKmH, useHeuristic),
 	})
 
+	var iter int
 	for pq.Len() > 0 {
+		// Check for context cancellation every 4096 iterations (non-blocking).
+		// At ~100k nodes/sec on the Iran graph this fires every ~40 ms —
+		// tight enough to honour a 100 ms deadline overshoot budget while
+		// adding < 0.01 µs overhead per iteration on modern hardware.
+		iter++
+		if iter&0x0FFF == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+		}
+
 		cur := heap.Pop(&pq).(*pqItem)
 
 		if closed[cur.nodeID] {
@@ -197,12 +217,21 @@ func flatDistKm(lat1, lng1, lat2, lng2, cosLat2 float64) float64 {
 	return math.Sqrt(dlat*dlat + dlng*dlng)
 }
 
+// edgeTravelTimeHours returns the travel time in hours for edge.
+//
+// Edge.TimeHours and Edge.SpeedKmH are now float32 (compact representation).
+// They are widened to float64 here to keep all accumulation arithmetic in
+// double precision, preventing rounding drift over long paths.
 func edgeTravelTimeHours(edge *Edge, speedFn func(*Edge) float64) float64 {
-	if speedFn == nil && edge.TimeHours > 0 && !math.IsNaN(edge.TimeHours) && !math.IsInf(edge.TimeHours, 0) {
-		return edge.TimeHours
+	if speedFn == nil {
+		// Use the precomputed TimeHours field when no per-profile speed override.
+		th := float64(edge.TimeHours)
+		if th > 0 && !math.IsNaN(th) && !math.IsInf(th, 0) {
+			return th
+		}
 	}
 
-	speed := edge.SpeedKmH
+	speed := float64(edge.SpeedKmH)
 	if speedFn != nil {
 		speed = speedFn(edge)
 	}

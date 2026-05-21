@@ -78,16 +78,20 @@ func main() {
 		LngColumn: cfg.ShipmentOriginLngColumn,
 	})
 	shipmentCancel()
-	if err != nil {
-		log.Fatalf("shipment database: %v", err)
-	}
-	if shipmentDB != nil {
+	switch {
+	case err != nil:
+		// Shipment DB is optional — a connection failure disables the feature
+		// but must not prevent the core routing service from starting.
+		slog.Warn("shipment search disabled — could not connect to shipment database",
+			"err", err,
+		)
+	case shipmentDB != nil:
 		defer shipmentDB.Close()
 		slog.Info("shipment database connected",
 			"driver", cfg.ShipmentDBDriver,
 			"table", cfg.ShipmentTable,
 		)
-	} else {
+	default:
 		slog.Info("shipment search disabled — SHIPMENT_DB_DSN not set")
 	}
 
@@ -196,9 +200,6 @@ func main() {
 	slog.Info("stopped")
 }
 
-// newRoutingEngine loads the road graph from PostGIS and returns an Engine.
-// The internal engine is always created — it is used as the fallback when OSRM
-// is unavailable, and exclusively for airplane mode in all configurations.
 func newRoutingEngine(cfg *config.Config, pg *storage.Postgres) *routing.Engine {
 	if pg == nil {
 		log.Fatal("[routing] POSTGRES_DSN is required — PostGIS road graph unavailable")
@@ -216,17 +217,10 @@ func newRoutingEngine(cfg *config.Config, pg *storage.Postgres) *routing.Engine 
 		log.Fatalf("[routing] failed to load road graph from PostGIS: %v", err)
 	}
 
-	slog.Info("road network loaded", "nodes", g.NodeCount())
-	return routing.NewEngineWithGraph(cfg.AvgSpeedKmH, g)
+	slog.Info("road network loaded", "nodes", g.NodeCount(), "yen_spur_cap", cfg.RoutingYenSpurCap)
+	return routing.NewEngineWithGraph(cfg.AvgSpeedKmH, g, cfg.RoutingYenSpurCap)
 }
 
-// buildRouteBackend constructs the active RouteBackend based on config.
-//
-//   - ROUTING_BACKEND=internal  →  InternalBackend only
-//   - ROUTING_BACKEND=osrm      →  OSRMBackend with InternalBackend as fallback
-//
-// The internal engine is always available as the fallback so that airplane
-// mode and remote-area endpoints (outside OSRM graph coverage) still work.
 func buildRouteBackend(cfg *config.Config, engine *routing.Engine) service.RouteBackend {
 	internal := service.NewInternalBackend(engine)
 
@@ -245,6 +239,7 @@ func buildRouteBackend(cfg *config.Config, engine *routing.Engine) service.Route
 
 	slog.Info("routing backend: internal A* + Yen's k-shortest-paths",
 		"max_in_flight", cfg.RoutingMaxInFlight,
+		"yen_spur_cap", cfg.RoutingYenSpurCap,
 	)
 	return internal
 }

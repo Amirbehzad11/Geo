@@ -30,7 +30,7 @@ type RouteBackend interface {
 // ---- InternalBackend -------------------------------------------------------
 
 // InternalBackend wraps the in-process A* routing engine.
-// It handles all transport modes including airplane (Bézier arc fallback).
+// It handles all transport modes including airplane (Bézier arc route).
 type InternalBackend struct {
 	engine *routing.Engine
 }
@@ -48,9 +48,14 @@ func (b *InternalBackend) ComputeRoute(
 	alternatives int,
 	startLat, startLng, endLat, endLng float64,
 ) (*model.RouteResponse, error) {
-	_ = ctx // internal engine is synchronous; ctx is checked only by the caller's semaphore
-	routes := b.engine.CalculateAlternatives(startLat, startLng, endLat, endLng, mode, alternatives)
+	// ctx is propagated all the way into the A* inner loop.
+	// When ROUTING_TIMEOUT_MS elapses the search is cancelled instead of
+	// returning a misleading ground-mode straight-line route.
+	routes := b.engine.CalculateAlternativesCtx(ctx, startLat, startLng, endLat, endLng, mode, alternatives)
 	if len(routes) == 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("internal engine: route search timed out or was cancelled: %w", err)
+		}
 		return nil, fmt.Errorf("internal engine: no route found")
 	}
 	return buildRouteResponse(mode, routes), nil

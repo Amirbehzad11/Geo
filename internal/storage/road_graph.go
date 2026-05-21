@@ -110,17 +110,29 @@ func (p *Postgres) loadRoadGraphTable(ctx context.Context, g *routing.Graph, see
 			seenNodes[toID] = true
 		}
 
+		// Build access flags from the four boolean columns.
+		var flags routing.AccessFlags
+		if car {
+			flags |= routing.FlagCar
+		}
+		if motorcycle {
+			flags |= routing.FlagMotorcycle
+		}
+		if bus {
+			flags |= routing.FlagBus
+		}
+		if foot {
+			flags |= routing.FlagFoot
+		}
+
 		edge := routing.Edge{
-			To:                toID,
-			DistanceKm:        distanceKm,
-			SpeedKmH:          speedKmH,
-			TimeHours:         distanceKm / speedKmH,
-			HighwayType:       highwayType,
-			Name:              name,
-			CarAllowed:        car,
-			MotorcycleAllowed: motorcycle,
-			BusAllowed:        bus,
-			FootAllowed:       foot,
+			To:         toID,
+			DistanceKm: distanceKm,
+			SpeedKmH:   float32(speedKmH),
+			TimeHours:  float32(distanceKm / speedKmH),
+			Kind:       routing.ParseHighwayKind(highwayType),
+			Flags:      flags,
+			NameIdx:    g.InternName(name), // intern into shared pool
 		}
 		edgeCount += addRoadGraphEdges(g, fromID, toID, edge, bidirectional)
 	}
@@ -141,25 +153,17 @@ func addRoadGraphEdges(g *routing.Graph, fromID, toID int64, edge routing.Edge, 
 		return count + 1
 	}
 
-	if edge.FootAllowed && pedestriansMayIgnoreVehicleOneway(edge.HighwayType) {
+	// Pedestrians may legally walk against vehicle one-way restrictions on most
+	// road classes; purely-pedestrian infrastructure (footway, steps, etc.) has
+	// its own direction data and does not need a synthetic reverse edge.
+	if edge.Flags.Has(routing.FlagFoot) && edge.Kind.AllowsPedestriansAgainstFlow() {
 		reverse := edge
 		reverse.To = fromID
-		reverse.CarAllowed = false
-		reverse.MotorcycleAllowed = false
-		reverse.BusAllowed = false
-		reverse.FootAllowed = true
+		// Strip vehicle access — only foot is permitted on the reverse direction.
+		reverse.Flags = routing.FlagFoot
 		g.AddEdge(toID, reverse)
 		count++
 	}
 
 	return count
-}
-
-func pedestriansMayIgnoreVehicleOneway(highway string) bool {
-	switch highway {
-	case "footway", "pedestrian", "path", "steps", "corridor", "platform", "sidewalk", "crossing":
-		return false
-	default:
-		return true
-	}
 }

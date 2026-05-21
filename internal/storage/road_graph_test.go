@@ -9,14 +9,11 @@ import (
 func TestAddRoadGraphEdgesAddsFootOnlyReverseForVehicleOneway(t *testing.T) {
 	g := routing.NewGraph()
 	edge := routing.Edge{
-		To:                2,
-		DistanceKm:        1,
-		SpeedKmH:          30,
-		HighwayType:       "residential",
-		CarAllowed:        true,
-		MotorcycleAllowed: true,
-		BusAllowed:        true,
-		FootAllowed:       true,
+		To:         2,
+		DistanceKm: 1,
+		SpeedKmH:   30,
+		Kind:       routing.ParseHighwayKind("residential"),
+		Flags:      routing.FlagCar | routing.FlagMotorcycle | routing.FlagBus | routing.FlagFoot,
 	}
 
 	count := addRoadGraphEdges(g, 1, 2, edge, false)
@@ -31,19 +28,19 @@ func TestAddRoadGraphEdgesAddsFootOnlyReverseForVehicleOneway(t *testing.T) {
 	if reverse.To != 1 {
 		t.Fatalf("reverse edge should point back to node 1, got %d", reverse.To)
 	}
-	if reverse.CarAllowed || reverse.MotorcycleAllowed || reverse.BusAllowed || !reverse.FootAllowed {
-		t.Fatalf("reverse edge should be foot-only, got %+v", reverse)
+	if reverse.Flags.Has(routing.FlagCar) || reverse.Flags.Has(routing.FlagMotorcycle) || reverse.Flags.Has(routing.FlagBus) || !reverse.Flags.Has(routing.FlagFoot) {
+		t.Fatalf("reverse edge should be foot-only, got flags=%08b", reverse.Flags)
 	}
 }
 
 func TestAddRoadGraphEdgesRespectsOnewayPedestrianWays(t *testing.T) {
 	g := routing.NewGraph()
 	edge := routing.Edge{
-		To:          2,
-		DistanceKm:  1,
-		SpeedKmH:    5,
-		HighwayType: "footway",
-		FootAllowed: true,
+		To:         2,
+		DistanceKm: 1,
+		SpeedKmH:   5,
+		Kind:       routing.ParseHighwayKind("footway"),
+		Flags:      routing.FlagFoot,
 	}
 
 	count := addRoadGraphEdges(g, 1, 2, edge, false)

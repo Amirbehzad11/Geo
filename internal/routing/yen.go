@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"math"
 	"sort"
 	"strconv"
@@ -9,9 +10,21 @@ import (
 
 // KFastestPaths returns up to k unique fastest paths using Yen's algorithm.
 // The first item is always the primary fastest path for the selected profile.
+// ctx is propagated into every A* call so the search can be cancelled when the
+// caller's deadline expires.
+//
+// maxSpurNodes caps how many spur positions are explored per alternative.
+// Yen's is O(k × N × T_A*) where N is the path length in nodes; for long
+// routes on the Iran graph (paths of 500–2000 nodes) this becomes tens of
+// seconds per request. Capping at 60–80 positions limits total spur A* calls
+// to ≤ 160 for k=3 while still finding meaningfully divergent alternatives
+// (early divergence points produce longer, more distinct routes).
+// Pass 0 to disable the cap (original unbounded behaviour).
 func (g *Graph) KFastestPaths(
+	ctx context.Context,
 	startID, goalID int64,
 	k int,
+	maxSpurNodes int,
 	edgeOK func(*Edge) bool,
 	speedFn func(*Edge) float64,
 	heuristicSpeedKmH float64,
@@ -20,7 +33,7 @@ func (g *Graph) KFastestPaths(
 		k = 1
 	}
 
-	first, err := g.aStar(startID, goalID, edgeOK, speedFn, heuristicSpeedKmH, nil, nil)
+	first, err := g.biAStar(ctx, startID, goalID, edgeOK, speedFn, heuristicSpeedKmH, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +48,11 @@ func (g *Graph) KFastestPaths(
 	for len(accepted) < k {
 		base := accepted[len(accepted)-1]
 
-		for spurIdx := 0; spurIdx < len(base.Nodes)-1; spurIdx++ {
+		spurEnd := len(base.Nodes) - 1
+		if maxSpurNodes > 0 && spurEnd > maxSpurNodes {
+			spurEnd = maxSpurNodes
+		}
+		for spurIdx := 0; spurIdx < spurEnd; spurIdx++ {
 			spurID := base.Nodes[spurIdx].ID
 			rootNodes := base.Nodes[:spurIdx+1]
 
@@ -54,7 +71,7 @@ func (g *Graph) KFastestPaths(
 				blockedNodes[n.ID] = true
 			}
 
-			spur, err := g.aStar(spurID, goalID, edgeOK, speedFn, heuristicSpeedKmH, blockedEdges, blockedNodes)
+			spur, err := g.biAStar(ctx, spurID, goalID, edgeOK, speedFn, heuristicSpeedKmH, blockedEdges, blockedNodes)
 			if err != nil {
 				continue
 			}

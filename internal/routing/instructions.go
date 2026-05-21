@@ -26,7 +26,12 @@ type maneuver struct {
 	street    string
 }
 
-func buildInstructions(path *PathResult, mode TransportMode, start, end Point, fallbackSpeedKmH float64) []Instruction {
+// buildInstructions generates turn-by-turn maneuvers for path.
+//
+// nameFn resolves an Edge.NameIdx to a human-readable street name.
+// Pass Graph.NameFor when a graph is available; nil is safe (produces empty
+// street names, which suppresses name references in instruction text).
+func buildInstructions(path *PathResult, mode TransportMode, start, end Point, fallbackSpeedKmH float64, nameFn func(uint32) string) []Instruction {
 	if path == nil || len(path.Nodes) == 0 {
 		return []Instruction{
 			arrivalInstruction(0, end),
@@ -37,7 +42,7 @@ func buildInstructions(path *PathResult, mode TransportMode, start, end Point, f
 		nodeIndex: 0,
 		typ:       "depart",
 		modifier:  "straight",
-		street:    streetName(path, 0),
+		street:    streetName(path, 0, nameFn),
 	}}
 
 	for i := 1; i < len(path.Nodes)-1; i++ {
@@ -55,7 +60,7 @@ func buildInstructions(path *PathResult, mode TransportMode, start, end Point, f
 					nodeIndex: i,
 					typ:       "uturn",
 					modifier:  "uturn",
-					street:    streetName(path, linkEnd),
+					street:    streetName(path, linkEnd, nameFn),
 				})
 			} else if linkDistance >= 0.08 && math.Abs(linkDelta) >= 55 {
 				typ, modifier := maneuverType(linkDelta)
@@ -63,14 +68,14 @@ func buildInstructions(path *PathResult, mode TransportMode, start, end Point, f
 					nodeIndex: i,
 					typ:       typ,
 					modifier:  modifier,
-					street:    streetName(path, linkEnd),
+					street:    streetName(path, linkEnd, nameFn),
 				})
 			}
 			i = linkEnd - 1
 			continue
 		}
-		prevStreet := streetName(path, i-1)
-		nextStreet := streetName(path, i)
+		prevStreet := streetName(path, i-1, nameFn)
+		nextStreet := streetName(path, i, nameFn)
 		if math.Abs(delta) < 25 && sameStreet(prevStreet, nextStreet) {
 			continue
 		}
@@ -185,18 +190,13 @@ func instructionLeg(path *PathResult, fromNode, toNode int, mode TransportMode, 
 	return distance, hours * 60
 }
 
-func profileSpeedFn(mode TransportMode) func(*Edge) float64 {
-	if p, ok := profiles[mode]; ok {
-		return p.edgeSpeed
-	}
-	return nil
-}
-
-func streetName(path *PathResult, edgeIdx int) string {
-	if path == nil || edgeIdx < 0 || edgeIdx >= len(path.Edges) {
+// streetName resolves the name of the edge at edgeIdx using nameFn.
+// Returns the trimmed name, or empty string when nameFn is nil or NameIdx is 0.
+func streetName(path *PathResult, edgeIdx int, nameFn func(uint32) string) string {
+	if path == nil || edgeIdx < 0 || edgeIdx >= len(path.Edges) || nameFn == nil {
 		return ""
 	}
-	return strings.TrimSpace(path.Edges[edgeIdx].Name)
+	return strings.TrimSpace(nameFn(path.Edges[edgeIdx].NameIdx))
 }
 
 func sameStreet(a, b string) bool {
@@ -226,6 +226,8 @@ func maneuverType(delta float64) (string, string) {
 	}
 }
 
+// unnamedLinkChain detects a sequence of consecutive unnamed link edges
+// starting at startEdge, used to suppress ramp/slip-road noise in instructions.
 func unnamedLinkChain(path *PathResult, startEdge int) (endEdge int, delta float64, distanceKm float64) {
 	if path == nil || startEdge < 0 || startEdge >= len(path.Edges) || startEdge+1 >= len(path.Nodes) {
 		return startEdge, 0, 0
@@ -264,8 +266,11 @@ func unnamedLinkChain(path *PathResult, startEdge int) (endEdge int, delta float
 	return endEdge, delta, distanceKm
 }
 
+// isUnnamedLink returns true for edges that are unnamed slip-road / ramp
+// segments (_link highway classes with no street name assigned).
+// These edges are collapsed silently in instruction generation.
 func isUnnamedLink(edge Edge) bool {
-	return strings.TrimSpace(edge.Name) == "" && strings.HasSuffix(strings.TrimSpace(edge.HighwayType), "_link")
+	return edge.NameIdx == 0 && edge.Kind.IsLink()
 }
 
 func instructionText(typ, modifier, street string, distanceKm float64, next maneuver) string {

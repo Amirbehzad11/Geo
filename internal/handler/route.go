@@ -28,7 +28,7 @@ func NewRouteHandler(svc *service.RouteService) *RouteHandler {
 // Calculate handles POST /route
 //
 //	@Summary		Calculate a route
-//	@Description	Computes the fastest route between two coordinates. Uses the configured routing backend (OSRM or internal A*), with automatic fallback to the internal engine when the primary backend is unavailable. Falls back to a Haversine arc when endpoints lie outside graph coverage.
+//	@Description	Computes the fastest route between two coordinates. Uses the configured routing backend (OSRM or internal A*), with automatic fallback to the internal engine when the primary backend is unavailable. Falls back to a straight Haversine estimate when endpoints lie outside graph coverage.
 //	@Tags			routing
 //	@Accept			json
 //	@Produce		json
