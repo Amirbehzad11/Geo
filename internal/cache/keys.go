@@ -1,12 +1,15 @@
 package cache
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 // routeCacheVersion is embedded in every route cache key.
 // Increment this string whenever the cached RouteResponse structure changes
 // or when a new routing backend is introduced, so old entries are naturally
 // invalidated without a manual FLUSHALL.
-const routeCacheVersion = "v14-ground-astar-timeout"
+const routeCacheVersion = "v15-prod-routing-cache-precision"
 
 // Key builders — single source of truth for all Redis key patterns.
 
@@ -30,6 +33,12 @@ func DriverLocationKey(driverID string) string {
 // The backend name ("internal" or "osrm") is included so that switching
 // backends does not serve stale results from the previous backend.
 func RouteKey(backend, mode string, alternatives int, sLat, sLng, eLat, eLng float64) string {
+	return RouteKeyWithPrecision(backend, mode, alternatives, 6, sLat, sLng, eLat, eLng)
+}
+
+// RouteKeyWithPrecision builds a Redis route key with configurable coordinate
+// precision. Precision 6 preserves the legacy key behavior.
+func RouteKeyWithPrecision(backend, mode string, alternatives, precision int, sLat, sLng, eLat, eLng float64) string {
 	if backend == "" {
 		backend = "internal"
 	}
@@ -39,8 +48,20 @@ func RouteKey(backend, mode string, alternatives int, sLat, sLng, eLat, eLng flo
 	if alternatives <= 0 {
 		alternatives = 1
 	}
-	return fmt.Sprintf("route:%s:%s:%s:%d:%.6f:%.6f:%.6f:%.6f",
+	precision = NormalizeRoutePrecision(precision)
+	coordFmt := "%." + strconv.Itoa(precision) + "f"
+	return fmt.Sprintf("route:%s:%s:%s:%d:"+coordFmt+":"+coordFmt+":"+coordFmt+":"+coordFmt,
 		routeCacheVersion, backend, mode, alternatives, sLat, sLng, eLat, eLng)
+}
+
+func NormalizeRoutePrecision(precision int) int {
+	if precision < 0 {
+		return 0
+	}
+	if precision > 6 {
+		return 6
+	}
+	return precision
 }
 
 func RateLimitKey(tripID int64) string { return fmt.Sprintf("rl:trip:%d", tripID) }

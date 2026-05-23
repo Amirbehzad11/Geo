@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -10,19 +9,28 @@ import (
 
 	"geo-service/internal/cache"
 	"geo-service/internal/events"
+	"geo-service/internal/middleware"
 	"geo-service/internal/model"
 	"geo-service/internal/routing"
 	"geo-service/internal/storage"
 )
 
-// ErrRoutingOverloaded is returned by Calculate when the in-flight semaphore is
-// full and the queue-wait timeout expires before a slot becomes free.
-var ErrRoutingOverloaded = errors.New("routing overloaded: too many concurrent requests")
-
 const (
 	defaultRouteAlternatives = 1
 	maxRouteAlternatives     = 3
 )
+
+type RouteMeta struct {
+	Backend      string
+	CacheHit     bool
+	Mode         string
+	Alternatives int
+}
+
+type routeComputeValue struct {
+	resp    *model.RouteResponse
+	backend string
+}
 
 // RouteServiceConfig carries tunables injected at construction time.
 type RouteServiceConfig struct {
@@ -37,6 +45,9 @@ type RouteServiceConfig struct {
 	// RouteTimeoutMs is the maximum wall-clock time allowed for a single
 	// backend.ComputeRoute call. Zero means no explicit timeout.
 	RouteTimeoutMs int64
+
+	RouteCachePrecision int
+	MaxAlternatives     int
 }
 
 // RouteService computes routes, caches results, persists them, and fires events.
@@ -62,14 +73,16 @@ type RouteServiceConfig struct {
 //	               ▼
 //	         persist + publish
 type RouteService struct {
-	backend      RouteBackend
-	redis        *cache.Redis
-	bus          *events.Bus
-	pg           *storage.Postgres
-	group        singleflight.Group
-	sem          chan struct{} // nil means unlimited
-	semTimeout   time.Duration
-	routeTimeout time.Duration
+	backend         RouteBackend
+	redis           *cache.Redis
+	bus             *events.Bus
+	pg              *storage.Postgres
+	group           singleflight.Group
+	sem             chan struct{} // nil means unlimited
+	semTimeout      time.Duration
+	routeTimeout    time.Duration
+	cachePrecision  int
+	maxAlternatives int
 }
 
 // NewRouteService constructs a RouteService with the given backend and config.
@@ -99,6 +112,19 @@ func NewRouteService(
 	svc.routeTimeout = time.Duration(cfg.RouteTimeoutMs) * time.Millisecond
 	// routeTimeout == 0 → no explicit timeout on backend calls
 
+	if cfg.RouteCachePrecision <= 0 {
+		svc.cachePrecision = 5
+	} else {
+		svc.cachePrecision = cache.NormalizeRoutePrecision(cfg.RouteCachePrecision)
+	}
+	svc.maxAlternatives = cfg.MaxAlternatives
+	if svc.maxAlternatives <= 0 {
+		svc.maxAlternatives = defaultRouteAlternatives
+	}
+	if svc.maxAlternatives > maxRouteAlternatives {
+		svc.maxAlternatives = maxRouteAlternatives
+	}
+
 	return svc
 }
 
@@ -111,50 +137,60 @@ func NewRouteService(
 //  4. Use singleflight to deduplicate concurrent identical cache-miss calls.
 //  5. Store result in Redis, persist async, publish event.
 func (s *RouteService) Calculate(ctx context.Context, req *model.RouteRequest) (*model.RouteResponse, error) {
+	resp, _, err := s.CalculateWithMeta(ctx, req)
+	return resp, err
+}
+
+func (s *RouteService) CalculateWithMeta(ctx context.Context, req *model.RouteRequest) (*model.RouteResponse, RouteMeta, error) {
+	meta := RouteMeta{Backend: s.backend.BackendName()}
+
 	mode, err := routing.NormalizeMode(routeMode(req))
 	if err != nil {
-		return nil, err
+		return nil, meta, err
 	}
+	meta.Mode = string(mode)
 
-	alternatives := normalizeAlternatives(req.Alternatives)
-	key := cache.RouteKey(s.backend.BackendName(), string(mode), alternatives,
+	alternatives := normalizeAlternatives(req.Alternatives, s.maxAlternatives)
+	meta.Alternatives = alternatives
+	key := cache.RouteKeyWithPrecision(s.backend.BackendName(), string(mode), alternatives, s.cachePrecision,
 		req.StartLat, req.StartLng, req.EndLat, req.EndLng)
 
-	// ── 1. Cache hit — serve without touching the semaphore ──────────────────
 	var cached model.RouteResponse
-	if err := s.redis.GetRoute(ctx, key, &cached); err == nil && cached.Distance > 0 {
-		if req.TripID > 0 {
-			_ = s.redis.SetTripRoute(ctx, req.TripID, &cached)
+	if s.redis != nil {
+		if err := s.redis.GetRoute(ctx, key, &cached); err == nil && cached.Distance > 0 {
+			middleware.RouteCacheTotal.WithLabelValues("hit").Inc()
+			middleware.RouteBackendTotal.WithLabelValues("cache", "success").Inc()
+			meta.CacheHit = true
+			meta.Backend = "cache"
+			if req.TripID > 0 {
+				_ = s.redis.SetTripRoute(ctx, req.TripID, &cached)
+			}
+			s.persistRoute(req, &cached)
+			return &cached, meta, nil
 		}
-		s.persistRoute(req, &cached)
-		return &cached, nil
+		middleware.RouteCacheTotal.WithLabelValues("miss").Inc()
 	}
 
-	// ── 2. Acquire in-flight semaphore slot ───────────────────────────────────
 	if s.sem != nil {
 		select {
 		case s.sem <- struct{}{}:
 			defer func() { <-s.sem }()
 		default:
-			// No free slot — wait up to semTimeout before rejecting.
 			timer := time.NewTimer(s.semTimeout)
 			defer timer.Stop()
 			select {
 			case s.sem <- struct{}{}:
 				defer func() { <-s.sem }()
 			case <-timer.C:
-				return nil, ErrRoutingOverloaded
+				middleware.RouteOverloadTotal.WithLabelValues("total").Inc()
+				return nil, meta, ErrRoutingOverloaded
 			case <-ctx.Done():
-				return nil, fmt.Errorf("request cancelled while waiting for routing slot: %w", ctx.Err())
+				return nil, meta, fmt.Errorf("%w: request cancelled while waiting for total routing slot: %v", ErrRoutingTimeout, ctx.Err())
 			}
 		}
 	}
 
-	// ── 3. Singleflight: one backend call per unique route key ────────────────
 	v, computeErr, _ := s.group.Do(key, func() (any, error) {
-		// Use a background context with the configured timeout so that a single
-		// caller's cancellation does not abort the shared computation (and any
-		// co-waiters would lose the result too).
 		computeCtx := context.Background()
 		if s.routeTimeout > 0 {
 			var cancel context.CancelFunc
@@ -162,34 +198,39 @@ func (s *RouteService) Calculate(ctx context.Context, req *model.RouteRequest) (
 			defer cancel()
 		}
 
-		resp, err := s.backend.ComputeRoute(
-			computeCtx, mode, alternatives,
+		result, err := computeRouteResult(
+			s.backend, computeCtx, mode, alternatives,
 			req.StartLat, req.StartLng, req.EndLat, req.EndLng,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// Cache the result. Use a short-lived context independent of the caller.
-		cacheCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = s.redis.SetRoute(cacheCtx, key, resp)
+		if s.redis != nil {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = s.redis.SetRoute(cacheCtx, key, result.Response)
+		}
 
-		return resp, nil
+		return routeComputeValue{resp: result.Response, backend: result.Backend}, nil
 	})
 	if computeErr != nil {
-		return nil, computeErr
+		return nil, meta, computeErr
 	}
 
-	resp := v.(*model.RouteResponse)
+	result := v.(routeComputeValue)
+	resp := result.resp
+	if result.backend != "" {
+		meta.Backend = result.backend
+	}
 
-	if req.TripID > 0 {
+	if s.redis != nil && req.TripID > 0 {
 		_ = s.redis.SetTripRoute(ctx, req.TripID, resp)
 	}
 	s.persistRoute(req, resp)
 	s.publishRouteCalculated(req.TripID, resp)
 
-	return resp, nil
+	return resp, meta, nil
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -201,12 +242,19 @@ func routeMode(req *model.RouteRequest) string {
 	return req.Mode
 }
 
-func normalizeAlternatives(n int) int {
+func normalizeAlternatives(n int, maxAllowed ...int) int {
+	max := maxRouteAlternatives
+	if len(maxAllowed) > 0 && maxAllowed[0] > 0 {
+		max = maxAllowed[0]
+	}
+	if max > maxRouteAlternatives {
+		max = maxRouteAlternatives
+	}
 	if n <= 0 {
 		return defaultRouteAlternatives
 	}
-	if n > maxRouteAlternatives {
-		return maxRouteAlternatives
+	if n > max {
+		return max
 	}
 	return n
 }
@@ -269,7 +317,7 @@ func (s *RouteService) persistRoute(req *model.RouteRequest, resp *model.RouteRe
 }
 
 func (s *RouteService) publishRouteCalculated(tripID int64, resp *model.RouteResponse) {
-	if tripID <= 0 {
+	if tripID <= 0 || s.bus == nil {
 		return
 	}
 	go func() {

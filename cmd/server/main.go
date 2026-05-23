@@ -14,11 +14,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -96,16 +98,16 @@ func main() {
 	}
 
 	// ---- routing engine ---------------------------------------------------------
-	// The internal A* engine is always initialised (used as the fallback and for
-	// airplane mode which OSRM does not support).
-	internalEngine := newRoutingEngine(cfg, pg)
-	routeBackend := buildRouteBackend(cfg, internalEngine)
+	internalEngine, internalLoader := prepareInternalRouting(cfg, pg)
+	routeBackend := buildRouteBackend(cfg, internalEngine, internalLoader)
 
 	// ---- services ---------------------------------------------------------------
 	routeSvc := service.NewRouteService(routeBackend, redisClient, eventBus, pg, service.RouteServiceConfig{
-		MaxInFlight:    cfg.RoutingMaxInFlight,
-		QueueTimeoutMs: cfg.RoutingQueueTimeoutMs,
-		RouteTimeoutMs: cfg.RoutingTimeoutMs,
+		MaxInFlight:         cfg.RoutingMaxInFlight,
+		QueueTimeoutMs:      cfg.RoutingQueueTimeoutMs,
+		RouteTimeoutMs:      cfg.RoutingTimeoutMs,
+		RouteCachePrecision: cfg.RouteCachePrecision,
+		MaxAlternatives:     cfg.RoutingMaxAlternatives,
 	})
 	gpsSvc := service.NewGPSService(redisClient, eventBus, cfg.GPSRateLimitMs, cfg.DeviationThreshKm)
 	driverSvc := service.NewDriverService(redisClient, cfg.DriverGeoKey, cfg.DriverLocationStreamKey, cfg.DriverSearchRadiusKm, cfg.ShipmentSearchLimit)
@@ -196,13 +198,52 @@ func main() {
 		log.Fatalf("graceful shutdown failed: %v", err)
 	}
 
-	pg.Close()
+	if pg != nil {
+		pg.Close()
+	}
 	slog.Info("stopped")
 }
 
-func newRoutingEngine(cfg *config.Config, pg *storage.Postgres) *routing.Engine {
+func prepareInternalRouting(cfg *config.Config, pg *storage.Postgres) (*routing.Engine, func(context.Context) (*routing.Engine, error)) {
+	loader := func(ctx context.Context) (*routing.Engine, error) {
+		return newRoutingEngine(ctx, cfg, pg)
+	}
+
+	if !shouldLoadInternalGraphAtStartup(cfg) {
+		slog.Info("internal road graph startup load skipped",
+			"routing_backend", cfg.RoutingBackend,
+			"internal_graph_enabled", cfg.InternalGraphEnabled,
+			"internal_graph_lazy_load", cfg.InternalGraphLazyLoad,
+		)
+		return nil, loader
+	}
+
+	engine, err := loader(context.Background())
+	if err != nil {
+		if cfg.InternalGraphRequired {
+			log.Fatalf("[routing] failed to load required road graph from PostGIS: %v", err)
+		}
+		slog.Warn("internal road graph unavailable; ground internal routes will return 503",
+			"err", err,
+		)
+		return nil, loader
+	}
+	return engine, loader
+}
+
+func shouldLoadInternalGraphAtStartup(cfg *config.Config) bool {
+	if !cfg.InternalGraphEnabled {
+		return false
+	}
+	if strings.EqualFold(cfg.RoutingBackend, "osrm") {
+		return false
+	}
+	return !cfg.InternalGraphLazyLoad
+}
+
+func newRoutingEngine(ctx context.Context, cfg *config.Config, pg *storage.Postgres) (*routing.Engine, error) {
 	if pg == nil {
-		log.Fatal("[routing] POSTGRES_DSN is required — PostGIS road graph unavailable")
+		return nil, fmt.Errorf("POSTGRES_DSN is required: PostGIS road graph unavailable")
 	}
 
 	timeout := time.Duration(cfg.RoadGraphLoadSec) * time.Second
@@ -210,36 +251,50 @@ func newRoutingEngine(cfg *config.Config, pg *storage.Postgres) *routing.Engine 
 		timeout = 180 * time.Second
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	g, err := pg.LoadRoadGraphRegions(ctx, cfg.RoadGraphRegions)
+	loadCtx, cancel := context.WithTimeout(ctx, timeout)
+	g, err := pg.LoadRoadGraphRegions(loadCtx, cfg.RoadGraphRegions)
 	cancel()
 	if err != nil {
-		log.Fatalf("[routing] failed to load road graph from PostGIS: %v", err)
+		return nil, err
 	}
 
 	slog.Info("road network loaded", "nodes", g.NodeCount(), "yen_spur_cap", cfg.RoutingYenSpurCap)
-	return routing.NewEngineWithGraph(cfg.AvgSpeedKmH, g, cfg.RoutingYenSpurCap)
+	return routing.NewEngineWithGraph(cfg.AvgSpeedKmH, g, cfg.RoutingYenSpurCap), nil
 }
 
-func buildRouteBackend(cfg *config.Config, engine *routing.Engine) service.RouteBackend {
-	internal := service.NewInternalBackend(engine)
+func buildRouteBackend(cfg *config.Config, engine *routing.Engine, loader func(context.Context) (*routing.Engine, error)) service.RouteBackend {
+	queueTimeout := time.Duration(cfg.RoutingQueueTimeoutMs) * time.Millisecond
+	internal := service.NewInternalBackendWithConfig(service.InternalBackendConfig{
+		Engine:       engine,
+		AvgSpeedKmH:  cfg.AvgSpeedKmH,
+		GraphEnabled: cfg.InternalGraphEnabled,
+		LazyLoad:     cfg.InternalGraphLazyLoad,
+		LoadEngine:   loader,
+	})
+	internalLimited := service.NewLimitedBackend(internal, cfg.InternalMaxInFlight, queueTimeout, "internal")
 
-	if cfg.RoutingBackend == "osrm" && cfg.OSRMBaseURL != "" {
+	if strings.EqualFold(cfg.RoutingBackend, "osrm") && cfg.OSRMBaseURL != "" {
 		timeout := time.Duration(cfg.RoutingTimeoutMs) * time.Millisecond
 		if timeout <= 0 {
 			timeout = 10 * time.Second
 		}
 		osrmBackend := service.NewOSRMBackend(cfg.OSRMBaseURL, timeout)
-		slog.Info("routing backend: OSRM with internal fallback",
+		osrmLimited := service.NewLimitedBackend(osrmBackend, cfg.OSRMMaxInFlight, queueTimeout, "osrm")
+		slog.Info("routing backend: OSRM primary",
 			"osrm_url", cfg.OSRMBaseURL,
 			"timeout_ms", cfg.RoutingTimeoutMs,
+			"osrm_max_in_flight", cfg.OSRMMaxInFlight,
+			"internal_graph_enabled", cfg.InternalGraphEnabled,
+			"internal_graph_loaded", engine != nil && engine.HasGraph(),
 		)
-		return service.NewFallbackBackend(osrmBackend, internal)
+		return service.NewFallbackBackend(osrmLimited, internalLimited)
 	}
 
 	slog.Info("routing backend: internal A* + Yen's k-shortest-paths",
-		"max_in_flight", cfg.RoutingMaxInFlight,
+		"total_max_in_flight", cfg.RoutingMaxInFlight,
+		"internal_max_in_flight", cfg.InternalMaxInFlight,
+		"internal_graph_loaded", engine != nil && engine.HasGraph(),
 		"yen_spur_cap", cfg.RoutingYenSpurCap,
 	)
-	return internal
+	return internalLimited
 }

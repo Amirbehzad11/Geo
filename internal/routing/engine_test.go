@@ -473,6 +473,29 @@ func TestNormalizeMode_Invalid(t *testing.T) {
 	}
 }
 
+func TestHighwayKindTrackParsingAndSpeedBehavior(t *testing.T) {
+	if got := ParseHighwayKind("track"); got != HWTrack {
+		t.Fatalf("ParseHighwayKind(track) = %v, want HWTrack", got)
+	}
+	if got := HWTrack.String(); got != "track" {
+		t.Fatalf("HWTrack.String() = %q, want track", got)
+	}
+	if HWTrack.BlocksWalking() {
+		t.Fatal("track should not block walking")
+	}
+
+	edge := &Edge{Kind: HWTrack, SpeedKmH: 40, Flags: FlagCar | FlagMotorcycle | FlagBus | FlagFoot}
+	if got := motorcycleSpeed(edge); got != 25 {
+		t.Fatalf("motorcycle track speed = %.1f, want 25", got)
+	}
+	if got := busSpeed(edge); got != 15 {
+		t.Fatalf("bus track speed = %.1f, want 15", got)
+	}
+	if got := walkingSpeed(edge); got != 2.0 {
+		t.Fatalf("walking track speed = %.1f, want 2.0", got)
+	}
+}
+
 // TestEncodeDecodePolyline_RoundTrip encodes known points and decodes them back,
 // asserting each coordinate matches within 1e-5 degrees.
 func TestEncodeDecodePolyline_RoundTrip(t *testing.T) {

@@ -120,19 +120,28 @@ services:
       # PostGIS (comment out to disable)
       POSTGRES_DSN: "host=postgres port=5432 user=geo password=geo_secret dbname=geodb sslmode=disable"
 
-      # Internal routing engine (always loaded as fallback)
+      # Internal routing engine
       AVG_SPEED_KMH: "40"
       ROAD_GRAPH_LOAD_TIMEOUT_SEC: "300"
+      INTERNAL_GRAPH_ENABLED: "${INTERNAL_GRAPH_ENABLED:-true}"
+      INTERNAL_GRAPH_LAZY_LOAD: "${INTERNAL_GRAPH_LAZY_LOAD:-false}"
+      INTERNAL_GRAPH_REQUIRED: "${INTERNAL_GRAPH_REQUIRED:-true}"
 
       # Routing backend selection
       # Set ROUTING_BACKEND=osrm to use OSRM as the primary engine (recommended
-      # for production). The internal A* engine is always kept as the fallback.
+      # for production). For OSRM-primary production without the large in-process
+      # graph, run with:
+      #   COMPOSE_PROFILES=osrm ROUTING_BACKEND=osrm INTERNAL_GRAPH_ENABLED=false docker compose up -d
       ROUTING_BACKEND: "${ROUTING_BACKEND:-internal}"
       OSRM_BASE_URL: "http://osrm:5000"
       ROUTING_TIMEOUT_MS: "30000"       # 30 s per routing call on the full Iran graph
-      ROUTING_MAX_IN_FLIGHT: "100"      # concurrent routing slots
-      ROUTING_QUEUE_TIMEOUT_MS: "10000" # wait time for a free slot (ms)
+      ROUTING_MAX_IN_FLIGHT: "${ROUTING_MAX_IN_FLIGHT:-100}" # total route requests
+      INTERNAL_ROUTING_MAX_IN_FLIGHT: "${INTERNAL_ROUTING_MAX_IN_FLIGHT:-4}"
+      OSRM_ROUTING_MAX_IN_FLIGHT: "${OSRM_ROUTING_MAX_IN_FLIGHT:-100}"
+      ROUTING_QUEUE_TIMEOUT_MS: "${ROUTING_QUEUE_TIMEOUT_MS:-1000}" # wait time for a free slot (ms)
       ROUTING_YEN_SPUR_CAP: "60"        # max spur nodes per Yen's iteration (0 = unlimited)
+      ROUTING_MAX_ALTERNATIVES: "${ROUTING_MAX_ALTERNATIVES:-1}"
+      ROUTE_CACHE_PRECISION: "${ROUTE_CACHE_PRECISION:-5}"
 
       # GPS processing
       GPS_RATE_LIMIT_MS: "3000"

@@ -83,6 +83,55 @@ func TestFallbackBackend_BackendNameIsPrimary(t *testing.T) {
 	}
 }
 
+func TestFallbackBackend_DoesNotLazyLoadInternalGraphOnPrimaryFailure(t *testing.T) {
+	loads := 0
+	internal := NewInternalBackendWithConfig(InternalBackendConfig{
+		AvgSpeedKmH:  40,
+		GraphEnabled: true,
+		LazyLoad:     true,
+		LoadEngine: func(context.Context) (*routing.Engine, error) {
+			loads++
+			return nil, errors.New("should not load")
+		},
+	})
+	fb := NewFallbackBackend(errBackend("osrm"), internal)
+
+	_, err := fb.ComputeRoute(context.Background(), routing.ModeCar, 1, 35, 51, 36, 52)
+	if !errors.Is(err, ErrRoutingBackendUnavailable) {
+		t.Fatalf("expected backend unavailable, got %v", err)
+	}
+	if loads != 0 {
+		t.Fatalf("fallback should not synchronously lazy-load internal graph, loads=%d", loads)
+	}
+}
+
+func TestInternalBackend_DisabledGraphReturnsUnavailableForGroundModes(t *testing.T) {
+	internal := NewInternalBackendWithConfig(InternalBackendConfig{
+		AvgSpeedKmH:  40,
+		GraphEnabled: false,
+	})
+
+	_, err := internal.ComputeRoute(context.Background(), routing.ModeCar, 1, 35, 51, 36, 52)
+	if !errors.Is(err, ErrRoutingBackendUnavailable) {
+		t.Fatalf("expected backend unavailable, got %v", err)
+	}
+}
+
+func TestInternalBackend_DisabledGraphStillServesAirplane(t *testing.T) {
+	internal := NewInternalBackendWithConfig(InternalBackendConfig{
+		AvgSpeedKmH:  40,
+		GraphEnabled: false,
+	})
+
+	resp, err := internal.ComputeRoute(context.Background(), routing.ModeAirplane, 1, 35, 51, 36, 52)
+	if err != nil {
+		t.Fatalf("airplane route should not need road graph: %v", err)
+	}
+	if resp.Distance <= 0 || len(resp.Primary.Polyline) == 0 {
+		t.Fatalf("expected airplane response with distance and polyline, got %+v", resp)
+	}
+}
+
 // ---- semaphore --------------------------------------------------------------
 
 // TestSemaphore_BlocksWhenFull verifies that a full semaphore blocks new calls
@@ -108,6 +157,41 @@ func TestSemaphore_BlocksWhenFull(t *testing.T) {
 		t.Fatal("semaphore should have been full")
 	case <-timer.C:
 		// Correct: timed out because semaphore was at capacity.
+	}
+}
+
+func TestLimitedBackend_ReturnsOverloadedWhenSlotsFull(t *testing.T) {
+	limited := NewLimitedBackend(okBackend("internal"), 1, 10*time.Millisecond, "internal")
+	limited.sem <- struct{}{}
+	defer func() { <-limited.sem }()
+
+	_, err := limited.ComputeRoute(context.Background(), routing.ModeCar, 1, 0, 0, 1, 1)
+	if !errors.Is(err, ErrRoutingOverloaded) {
+		t.Fatalf("expected overloaded error, got %v", err)
+	}
+}
+
+func TestTypedRouteErrors(t *testing.T) {
+	if err := classifyOSRMError(context.DeadlineExceeded); !errors.Is(err, ErrRoutingTimeout) {
+		t.Fatalf("deadline should classify as timeout, got %v", err)
+	}
+	if err := classifyOSRMError(errors.New("osrm: routing code \"NoRoute\"")); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("NoRoute should classify as not found, got %v", err)
+	}
+	if err := classifyOSRMError(errors.New("connection refused")); !errors.Is(err, ErrRoutingBackendUnavailable) {
+		t.Fatalf("connection failure should classify as unavailable, got %v", err)
+	}
+}
+
+func TestNormalizeAlternativesUsesServerSideMax(t *testing.T) {
+	if got := normalizeAlternatives(5, 1); got != 1 {
+		t.Fatalf("normalizeAlternatives(5, 1) = %d, want 1", got)
+	}
+	if got := normalizeAlternatives(0, 2); got != 1 {
+		t.Fatalf("normalizeAlternatives(0, 2) = %d, want default 1", got)
+	}
+	if got := normalizeAlternatives(5, 99); got != maxRouteAlternatives {
+		t.Fatalf("normalizeAlternatives should never exceed hard max %d, got %d", maxRouteAlternatives, got)
 	}
 }
 
@@ -172,5 +256,19 @@ func TestCacheKey_IncludesBackendAndVersion(t *testing.T) {
 	}
 	if !strings.Contains(internalKey, "internal") {
 		t.Errorf("internal key does not contain 'internal': %q", internalKey)
+	}
+}
+
+func TestCacheKeyPrecision_RoundsNearbyCoordinates(t *testing.T) {
+	keyA := cache.RouteKeyWithPrecision("osrm", "car", 1, 5, 35.689201, 51.389001, 35.700001, 51.400001)
+	keyB := cache.RouteKeyWithPrecision("osrm", "car", 1, 5, 35.689202, 51.389002, 35.700002, 51.400002)
+	if keyA != keyB {
+		t.Fatalf("precision=5 should reuse nearby route keys:\n%s\n%s", keyA, keyB)
+	}
+
+	legacyA := cache.RouteKey("osrm", "car", 1, 35.689201, 51.389001, 35.700001, 51.400001)
+	legacyB := cache.RouteKey("osrm", "car", 1, 35.689202, 51.389002, 35.700002, 51.400002)
+	if legacyA == legacyB {
+		t.Fatalf("legacy precision=6 should keep these keys distinct")
 	}
 }

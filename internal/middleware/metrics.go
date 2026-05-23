@@ -23,6 +23,37 @@ var (
 		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5},
 	})
 
+	RouteCacheTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "geo_route_cache_total",
+		Help: "Route cache lookups by result.",
+	}, []string{"result"})
+
+	RouteBackendTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "geo_route_backend_total",
+		Help: "Route backend attempts by backend and result.",
+	}, []string{"backend", "result"})
+
+	RouteInternalQueueWaitDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "geo_route_internal_queue_wait_seconds",
+		Help:    "Time spent waiting for an internal routing worker slot.",
+		Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5},
+	})
+
+	RouteInternalActiveWorkers = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "geo_route_internal_active_workers",
+		Help: "Currently active internal routing workers.",
+	})
+
+	RouteTimeoutTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "geo_route_timeout_total",
+		Help: "Route requests that timed out by backend.",
+	}, []string{"backend"})
+
+	RouteOverloadTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "geo_route_overload_total",
+		Help: "Route requests rejected by concurrency limit scope.",
+	}, []string{"scope"})
+
 	// GPSUpdateTotal counts GPS position updates processed.
 	GPSUpdateTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "geo_gps_updates_total",

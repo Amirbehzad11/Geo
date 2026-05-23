@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -24,12 +25,20 @@ type Config struct {
 	APIKey             string   // API_KEY; the expected key value
 
 	// ---- routing backend ----
-	RoutingBackend        string // ROUTING_BACKEND: "internal" (default) | "osrm"
-	OSRMBaseURL           string // OSRM_BASE_URL: e.g. "http://osrm:5000"
-	RoutingTimeoutMs      int64  // ROUTING_TIMEOUT_MS: per-call backend deadline (default 30 000)
-	RoutingMaxInFlight    int    // ROUTING_MAX_IN_FLIGHT: concurrent routing cap (default 100)
-	RoutingQueueTimeoutMs int64  // ROUTING_QUEUE_TIMEOUT_MS: semaphore wait time (default 1 000)
-	RoutingYenSpurCap     int    // ROUTING_YEN_SPUR_CAP: max spur nodes per Yen's iteration (default 60; 0 = unlimited)
+	RoutingBackend         string // ROUTING_BACKEND: "internal" (default) | "osrm"
+	OSRMBaseURL            string // OSRM_BASE_URL: e.g. "http://osrm:5000"
+	RoutingTimeoutMs       int64  // ROUTING_TIMEOUT_MS: per-call backend deadline (default 30 000)
+	RoutingMaxInFlight     int    // ROUTING_MAX_IN_FLIGHT: total concurrent route request cap (default 100)
+	InternalMaxInFlight    int    // INTERNAL_ROUTING_MAX_IN_FLIGHT: internal graph search cap (default min(CPU, 4))
+	OSRMMaxInFlight        int    // OSRM_ROUTING_MAX_IN_FLIGHT: concurrent OSRM call cap (default 100)
+	RoutingQueueTimeoutMs  int64  // ROUTING_QUEUE_TIMEOUT_MS: semaphore wait time (default 1 000)
+	RoutingYenSpurCap      int    // ROUTING_YEN_SPUR_CAP: max spur nodes per Yen's iteration (default 60; 0 = unlimited)
+	RoutingMaxAlternatives int    // ROUTING_MAX_ALTERNATIVES: server-side alternatives cap (default 1)
+	RouteCachePrecision    int    // ROUTE_CACHE_PRECISION: coordinate decimals in route cache keys (default 5; 6 = old behavior)
+
+	InternalGraphEnabled  bool // INTERNAL_GRAPH_ENABLED: allow internal road graph loading/searches
+	InternalGraphLazyLoad bool // INTERNAL_GRAPH_LAZY_LOAD: load internal road graph on first direct internal use
+	InternalGraphRequired bool // INTERNAL_GRAPH_REQUIRED: fail startup when a required startup graph load fails
 
 	ShipmentDBDriver        string  // SHIPMENT_DB_DRIVER; mysql or postgres/pgx
 	ShipmentDBDSN           string  // SHIPMENT_DB_DSN; direct read-only connection to Laravel DB
@@ -63,9 +72,16 @@ func Load() *Config {
 	}
 
 	routingMaxInFlight, _ := strconv.Atoi(getEnv("ROUTING_MAX_IN_FLIGHT", "100"))
+	internalMaxInFlight, _ := strconv.Atoi(getEnv("INTERNAL_ROUTING_MAX_IN_FLIGHT", strconv.Itoa(defaultInternalRoutingLimit())))
+	osrmMaxInFlight, _ := strconv.Atoi(getEnv("OSRM_ROUTING_MAX_IN_FLIGHT", "100"))
 	routingTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_TIMEOUT_MS", "30000"), 10, 64)
 	routingQueueTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_QUEUE_TIMEOUT_MS", "1000"), 10, 64)
 	routingYenSpurCap, _ := strconv.Atoi(getEnv("ROUTING_YEN_SPUR_CAP", "60"))
+	routingMaxAlternatives, _ := strconv.Atoi(getEnv("ROUTING_MAX_ALTERNATIVES", "1"))
+	routeCachePrecision, _ := strconv.Atoi(getEnv("ROUTE_CACHE_PRECISION", "5"))
+	internalGraphEnabled, _ := strconv.ParseBool(getEnv("INTERNAL_GRAPH_ENABLED", "true"))
+	internalGraphLazyLoad, _ := strconv.ParseBool(getEnv("INTERNAL_GRAPH_LAZY_LOAD", "false"))
+	internalGraphRequired, _ := strconv.ParseBool(getEnv("INTERNAL_GRAPH_REQUIRED", "true"))
 
 	return &Config{
 		Port:               getEnv("PORT", "8080"),
@@ -96,12 +112,19 @@ func Load() *Config {
 		DriverLocationStreamKey: getEnv("DRIVER_LOCATION_STREAM_KEY", "driver:locations:stream"),
 		DriverSearchRadiusKm:    driverRadiusKm,
 
-		RoutingBackend:        getEnv("ROUTING_BACKEND", "internal"),
-		OSRMBaseURL:           getEnv("OSRM_BASE_URL", "http://osrm:5000"),
-		RoutingTimeoutMs:      routingTimeoutMs,
-		RoutingMaxInFlight:    routingMaxInFlight,
-		RoutingQueueTimeoutMs: routingQueueTimeoutMs,
-		RoutingYenSpurCap:     routingYenSpurCap,
+		RoutingBackend:         getEnv("ROUTING_BACKEND", "internal"),
+		OSRMBaseURL:            getEnv("OSRM_BASE_URL", "http://osrm:5000"),
+		RoutingTimeoutMs:       routingTimeoutMs,
+		RoutingMaxInFlight:     routingMaxInFlight,
+		InternalMaxInFlight:    internalMaxInFlight,
+		OSRMMaxInFlight:        osrmMaxInFlight,
+		RoutingQueueTimeoutMs:  routingQueueTimeoutMs,
+		RoutingYenSpurCap:      routingYenSpurCap,
+		RoutingMaxAlternatives: routingMaxAlternatives,
+		RouteCachePrecision:    routeCachePrecision,
+		InternalGraphEnabled:   internalGraphEnabled,
+		InternalGraphLazyLoad:  internalGraphLazyLoad,
+		InternalGraphRequired:  internalGraphRequired,
 	}
 }
 
@@ -121,4 +144,15 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+func defaultInternalRoutingLimit() int {
+	n := runtime.NumCPU()
+	if n <= 0 {
+		return 1
+	}
+	if n > 4 {
+		return 4
+	}
+	return n
 }

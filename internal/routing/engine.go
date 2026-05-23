@@ -39,9 +39,9 @@ type Route struct {
 
 // Engine wraps the graph router with an automatic Haversine fallback.
 type Engine struct {
-	graph        *Graph
-	avgSpeedKmH  float64
-	yenSpurCap   int // max spur positions per Yen's iteration; 0 = unlimited
+	graph       *Graph
+	avgSpeedKmH float64
+	yenSpurCap  int // max spur positions per Yen's iteration; 0 = unlimited
 }
 
 // NewEngineWithGraph creates an Engine backed by g.
@@ -206,6 +206,8 @@ func motorcycleSpeed(e *Edge) float64 {
 		return 25
 	case HWService:
 		return 25
+	case HWTrack:
+		return 25
 	default:
 		return float64(e.SpeedKmH) * 1.1
 	}
@@ -241,6 +243,8 @@ func busSpeed(e *Edge) float64 {
 		return minSpeed(15, float64(e.SpeedKmH))
 	case HWService:
 		return minSpeed(15, float64(e.SpeedKmH))
+	case HWTrack:
+		return minSpeed(15, float64(e.SpeedKmH))
 	default:
 		return float64(e.SpeedKmH) * 0.8
 	}
@@ -260,6 +264,8 @@ func walkingSpeed(e *Edge) float64 {
 		return 4.0
 	case HWResidential, HWService:
 		return 2.2
+	case HWTrack:
+		return 2.0
 	case HWUnclassified:
 		return 1.8
 	case HWTertiary, HWTertiaryLink:

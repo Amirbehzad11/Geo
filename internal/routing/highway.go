@@ -21,6 +21,7 @@ const (
 	HWResidential                      // residential
 	HWLivingStreet                     // living_street
 	HWService                          // service
+	HWTrack                            // track
 	HWFootway                          // footway
 	HWPedestrian                       // pedestrian
 	HWPath                             // path
@@ -49,6 +50,7 @@ var hwKindStr = [hwKindCount]string{
 	HWResidential:   "residential",
 	HWLivingStreet:  "living_street",
 	HWService:       "service",
+	HWTrack:         "track",
 	HWFootway:       "footway",
 	HWPedestrian:    "pedestrian",
 	HWPath:          "path",
