@@ -259,6 +259,61 @@ func normalizeAlternatives(n int, maxAllowed ...int) int {
 	return n
 }
 
+// buildMultiModalTrainResponse converts walk→train→walk legs into a RouteResponse.
+func buildMultiModalTrainResponse(legs []*routing.MultiModalLeg) *model.RouteResponse {
+	return buildMultiModalResponse(routing.ModeTrain, legs)
+}
+
+// buildMultiModalTransitResponse converts a walk → bus/metro → walk public-transport
+// itinerary into a RouteResponse.
+func buildMultiModalTransitResponse(legs []*routing.MultiModalLeg) *model.RouteResponse {
+	return buildMultiModalResponse(routing.ModePublicTransport, legs)
+}
+
+// buildMultiModalResponse is the shared implementation used by every multi-modal
+// route mode. It aggregates per-leg distance/duration and stitches polylines so
+// clients that ignore .Legs still get a usable end-to-end route.
+func buildMultiModalResponse(topMode routing.TransportMode, legs []*routing.MultiModalLeg) *model.RouteResponse {
+	modelLegs := make([]model.RouteLeg, 0, len(legs))
+	var totalDist, totalDur float64
+	var allPoints []routing.Point
+
+	for _, leg := range legs {
+		if leg.Route == nil {
+			continue
+		}
+		modelLegs = append(modelLegs, model.RouteLeg{
+			Mode:         string(leg.Mode),
+			DistanceKm:   leg.Route.Distance,
+			DurationMin:  leg.Route.Duration,
+			Polyline:     leg.Route.Polyline,
+			Instructions: routeInstructions(leg.Route.Instructions),
+		})
+		totalDist += leg.Route.Distance
+		totalDur += leg.Route.Duration
+		allPoints = append(allPoints, routing.DecodePolyline(leg.Route.Polyline)...)
+	}
+
+	combinedPolyline := routing.EncodePolyline(allPoints)
+	modeStr := string(topMode)
+
+	return &model.RouteResponse{
+		Mode:     modeStr,
+		Distance: totalDist,
+		Duration: totalDur,
+		Polyline: combinedPolyline,
+		Legs:     modelLegs,
+		Primary: model.RouteOption{
+			ID:          1,
+			Mode:        modeStr,
+			IsPrimary:   true,
+			DistanceKm:  totalDist,
+			DurationMin: totalDur,
+			Polyline:    combinedPolyline,
+		},
+	}
+}
+
 // buildRouteResponse converts a slice of internal routing.Route values to the
 // API model. It is also called by InternalBackend.ComputeRoute.
 func buildRouteResponse(mode routing.TransportMode, routes []*routing.Route) *model.RouteResponse {

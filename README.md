@@ -209,6 +209,7 @@ curl -s http://localhost:8080/health | jq .
 | `REDIS_DB` | `0` | Redis database index |
 | `POSTGRES_DSN` | **required** | PostGIS connection string |
 | `ROAD_GRAPH_REGIONS` | — | Comma-separated region table suffixes |
+| `RAIL_GRAPH_REGIONS` | same as `ROAD_GRAPH_REGIONS` | Comma-separated rail table suffixes |
 | `ROAD_GRAPH_LOAD_TIMEOUT_SEC` | `180` | Startup graph load timeout (seconds) |
 | `AVG_SPEED_KMH` | `40` | Speed used for Haversine fallback routes |
 | `GPS_RATE_LIMIT_MS` | `3000` | Minimum milliseconds between GPS updates per trip |

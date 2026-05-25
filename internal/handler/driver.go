@@ -2,7 +2,7 @@ package handler
 
 import (
 	"context"
-	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -11,7 +11,6 @@ import (
 	"geo-service/internal/model"
 	"geo-service/internal/response"
 	"geo-service/internal/service"
-	"geo-service/internal/utils"
 )
 
 const driverLocationTimeout = 3 * time.Second
@@ -35,8 +34,7 @@ func (h *DriverHandler) UpdateLocation(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, "INVALID_JSON", err.Error())
 		return
 	}
-	if !utils.ValidCoords(req.Lat, req.Lng) {
-		response.ValidationFail(c, "coordinates out of valid range (-90 <= lat <= 90, -180 <= lng <= 180)")
+	if !validateCoords(c, req.Lat, req.Lng) {
 		return
 	}
 
@@ -45,15 +43,11 @@ func (h *DriverHandler) UpdateLocation(c *gin.Context) {
 
 	result, err := h.svc.UpdateLocation(ctx, req)
 	if err != nil {
-		if errors.Is(err, service.ErrDriverIDRequired) {
-			response.ValidationFail(c, err.Error())
-			return
+		status, code, message := mapServiceError(err)
+		if status >= 500 {
+			slog.Error("driver location update failed", "err", err, "driver_id", req.DriverID)
 		}
-		if errors.Is(err, service.ErrDriverLocationDisabled) {
-			response.Fail(c, http.StatusServiceUnavailable, "DRIVER_LOCATION_DISABLED", err.Error())
-			return
-		}
-		response.Fail(c, http.StatusInternalServerError, "DRIVER_LOCATION_FAILED", err.Error())
+		response.Fail(c, status, code, message)
 		return
 	}
 

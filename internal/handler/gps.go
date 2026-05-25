@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -11,7 +11,6 @@ import (
 	"geo-service/internal/model"
 	"geo-service/internal/response"
 	"geo-service/internal/service"
-	"geo-service/internal/utils"
 )
 
 // GPSHandler exposes the live GPS update endpoints.
@@ -53,18 +52,17 @@ func (h *GPSHandler) Update(c *gin.Context) {
 		response.ValidationFail(c, "timestamp must be a positive Unix epoch (seconds)")
 		return
 	}
-	if !utils.ValidCoords(update.Lat, update.Lng) {
-		response.ValidationFail(c, "coordinates out of valid range (-90 ≤ lat ≤ 90, -180 ≤ lng ≤ 180)")
+	if !validateCoords(c, update.Lat, update.Lng) {
 		return
 	}
 
 	state, err := h.svc.ProcessUpdate(c.Request.Context(), &update)
 	if err != nil {
-		if errors.Is(err, service.ErrRateLimited) {
-			response.Fail(c, http.StatusTooManyRequests, "RATE_LIMITED", err.Error())
-			return
+		status, code, message := mapServiceError(err)
+		if status >= 500 {
+			slog.Error("gps update failed", "err", err, "trip_id", update.TripID)
 		}
-		response.Fail(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		response.Fail(c, status, code, message)
 		return
 	}
 
@@ -92,7 +90,7 @@ func (h *GPSHandler) GetLocation(c *gin.Context) {
 
 	state, err := h.svc.GetLocation(c.Request.Context(), tripID)
 	if err != nil {
-		response.Fail(c, http.StatusNotFound, "NOT_FOUND", err.Error())
+		response.Fail(c, http.StatusNotFound, "NOT_FOUND", "no location found for this trip")
 		return
 	}
 

@@ -8,6 +8,80 @@ import (
 	"geo-service/internal/routing"
 )
 
+// LoadRailGraph builds the in-memory rail routing graph from rail_segments.
+func (p *Postgres) LoadRailGraph(ctx context.Context) (*routing.Graph, error) {
+	if p == nil {
+		return nil, fmt.Errorf("postgres disabled")
+	}
+
+	q := fmt.Sprintf(`
+		SELECT
+			from_node_id, to_node_id,
+			from_lat, from_lng, to_lat, to_lng,
+			distance_km, speed_kmh, railway_type, COALESCE(name, ''),
+			bidirectional
+		FROM %s
+		WHERE distance_km > 0`, quoteIdent("rail_segments"))
+
+	rows, err := p.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("load rail_segments: %w", err)
+	}
+	defer rows.Close()
+
+	g := routing.NewGraph()
+	seenNodes := make(map[int64]bool)
+	edgeCount := 0
+
+	for rows.Next() {
+		var (
+			fromID, toID                   int64
+			fromLat, fromLng, toLat, toLng float64
+			distanceKm, speedKmH           float64
+			railwayType, name              string
+			bidirectional                  bool
+		)
+		if err := rows.Scan(
+			&fromID, &toID,
+			&fromLat, &fromLng, &toLat, &toLng,
+			&distanceKm, &speedKmH, &railwayType, &name,
+			&bidirectional,
+		); err != nil {
+			return nil, fmt.Errorf("scan rail segment: %w", err)
+		}
+
+		if speedKmH <= 0 {
+			speedKmH = 80
+		}
+		if !seenNodes[fromID] {
+			g.AddNode(&routing.Node{ID: fromID, Lat: fromLat, Lng: fromLng})
+			seenNodes[fromID] = true
+		}
+		if !seenNodes[toID] {
+			g.AddNode(&routing.Node{ID: toID, Lat: toLat, Lng: toLng})
+			seenNodes[toID] = true
+		}
+
+		edge := routing.Edge{
+			To:         toID,
+			DistanceKm: distanceKm,
+			SpeedKmH:   float32(speedKmH),
+			TimeHours:  float32(distanceKm / speedKmH),
+			Kind:       routing.ParseHighwayKind(railwayType),
+			Flags:      routing.FlagTrain,
+			NameIdx:    g.InternName(name),
+		}
+		edgeCount += addRoadGraphEdges(g, fromID, toID, edge, bidirectional)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rail_segments: %w", err)
+	}
+	if edgeCount == 0 {
+		return nil, fmt.Errorf("rail_segments table is empty")
+	}
+	return g, nil
+}
+
 // LoadRoadGraph builds the in-memory routing graph from road_segments.
 func (p *Postgres) LoadRoadGraph(ctx context.Context) (*routing.Graph, error) {
 	return p.LoadRoadGraphRegions(ctx, nil)

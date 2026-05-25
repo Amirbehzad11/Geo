@@ -78,6 +78,79 @@ type wayCandidate struct {
 	access        accessFlags
 }
 
+// invalidDSNFlagValue returns true when dsn looks like an unexpanded shell
+// variable or a flag name rather than a real connection string.
+func invalidDSNFlagValue(dsn string) bool {
+	trimmed := strings.TrimSpace(dsn)
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "$") || strings.HasPrefix(trimmed, "%") {
+		return true
+	}
+	return false
+}
+
+var railwaySpeed = map[string]float64{
+	"rail":         120,
+	"subway":       60,
+	"light_rail":   50,
+	"narrow_gauge": 40,
+	"tram":         30,
+	"monorail":     60,
+}
+
+type railCandidate struct {
+	id            int64
+	refs          []int64
+	railway       string
+	name          string
+	speedKmH      float64
+	bidirectional bool
+}
+
+func railCandidateFromWay(id int64, refs []int64, tags map[string]string) (railCandidate, bool) {
+	railway := tags["railway"]
+	if _, ok := railwaySpeed[railway]; !ok || len(refs) < 2 {
+		return railCandidate{}, false
+	}
+
+	bidirectional := true
+	if strings.TrimSpace(tags["oneway"]) == "-1" {
+		bidirectional = false
+		refs = reverseIDs(refs)
+	} else if isOneway(tags) {
+		bidirectional = false
+	}
+
+	name := tags["name"]
+	if name == "" {
+		name = tags["ref"]
+	}
+
+	speed := railwaySpeed[railway]
+	if ms, ok := tags["maxspeed"]; ok {
+		match := leadingNumber.FindStringSubmatch(ms)
+		if len(match) == 2 {
+			if v, err := strconv.ParseFloat(match[1], 64); err == nil && v > 0 {
+				speed = v
+			}
+		}
+	}
+
+	return railCandidate{
+		id:            id,
+		refs:          refs,
+		railway:       railway,
+		name:          name,
+		speedKmH:      speed,
+		bidirectional: bidirectional,
+	}, true
+}
+
 var highwaySpeed = map[string]float64{
 	"motorway":       110,
 	"motorway_link":  80,

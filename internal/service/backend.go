@@ -119,7 +119,17 @@ func (b *InternalBackend) CanServeModeWithoutLoad(mode routing.TransportMode) bo
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.engine != nil && b.engine.HasGraph()
+	if b.engine == nil {
+		return false
+	}
+	switch mode {
+	case routing.ModeTrain:
+		return b.engine.HasRailGraph()
+	case routing.ModePublicTransport:
+		return b.engine.HasTransitGraph()
+	default:
+		return b.engine.HasGraph()
+	}
 }
 
 func (b *InternalBackend) ComputeRoute(
@@ -147,6 +157,30 @@ func (b *InternalBackend) ComputeRouteResult(
 		return nil, err
 	}
 
+	if mode == routing.ModeTrain {
+		legs := engine.ComputeTrainRoute(ctx, startLat, startLng, endLat, endLng)
+		if legs == nil || len(legs) == 0 {
+			err := fmt.Errorf("%w: no rail route found between the two points", ErrRouteNotFound)
+			recordBackendAttempt("internal", err)
+			return nil, err
+		}
+		resp := buildMultiModalTrainResponse(legs)
+		recordBackendAttempt("internal", nil)
+		return &RouteComputeResult{Response: resp, Backend: "internal"}, nil
+	}
+
+	if mode == routing.ModePublicTransport {
+		legs := engine.ComputeTransitRoute(ctx, startLat, startLng, endLat, endLng)
+		if legs == nil || len(legs) == 0 {
+			err := fmt.Errorf("%w: no public transport route found between the two points", ErrRouteNotFound)
+			recordBackendAttempt("internal", err)
+			return nil, err
+		}
+		resp := buildMultiModalTransitResponse(legs)
+		recordBackendAttempt("internal", nil)
+		return &RouteComputeResult{Response: resp, Backend: "internal"}, nil
+	}
+
 	routes := engine.CalculateAlternativesCtx(ctx, startLat, startLng, endLat, endLng, mode, alternatives)
 	if len(routes) == 0 {
 		err := classifyInternalRouteError(ctx)
@@ -169,6 +203,20 @@ func (b *InternalBackend) engineFor(ctx context.Context, mode routing.TransportM
 			return engine, nil
 		}
 		return routing.NewEngineWithGraph(b.avgSpeedKmH, nil, 0), nil
+	}
+
+	if mode == routing.ModeTrain {
+		if engine != nil && engine.HasRailGraph() {
+			return engine, nil
+		}
+		return nil, fmt.Errorf("%w: rail graph is not loaded (set RAIL_GRAPH_ENABLED=true)", ErrRoutingBackendUnavailable)
+	}
+
+	if mode == routing.ModePublicTransport {
+		if engine != nil && engine.HasTransitGraph() {
+			return engine, nil
+		}
+		return nil, fmt.Errorf("%w: transit graph is not loaded (run osm2transit to import bus/metro data)", ErrRoutingBackendUnavailable)
 	}
 
 	if engine != nil && engine.HasGraph() {
@@ -415,21 +463,26 @@ func (b *FallbackBackend) ComputeRouteResult(
 	return nil, fmt.Errorf("%w: primary error: %v; fallback error: %v", ErrRoutingBackendUnavailable, err, fallbackErr)
 }
 
-func recordBackendAttempt(backend string, err error) {
-	result := "success"
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrRoutingOverloaded):
-			result = "overloaded"
-		case errors.Is(err, ErrRoutingTimeout):
-			result = "timeout"
-		case errors.Is(err, ErrRouteNotFound):
-			result = "not_found"
-		case errors.Is(err, ErrRoutingBackendUnavailable):
-			result = "unavailable"
-		default:
-			result = "error"
-		}
+// classifyRouteError returns the canonical metric label for a routing error.
+// Used by metrics emitters across all backends.
+func classifyRouteError(err error) string {
+	if err == nil {
+		return "success"
 	}
-	middleware.RouteBackendTotal.WithLabelValues(backend, result).Inc()
+	switch {
+	case errors.Is(err, ErrRoutingOverloaded):
+		return "overloaded"
+	case errors.Is(err, ErrRoutingTimeout):
+		return "timeout"
+	case errors.Is(err, ErrRouteNotFound):
+		return "not_found"
+	case errors.Is(err, ErrRoutingBackendUnavailable):
+		return "unavailable"
+	default:
+		return "error"
+	}
+}
+
+func recordBackendAttempt(backend string, err error) {
+	middleware.RouteBackendTotal.WithLabelValues(backend, classifyRouteError(err)).Inc()
 }

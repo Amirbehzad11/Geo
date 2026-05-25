@@ -462,7 +462,7 @@ func TestNormalizeMode_Aliases(t *testing.T) {
 
 // TestNormalizeMode_Invalid ensures unsupported modes return an error.
 func TestNormalizeMode_Invalid(t *testing.T) {
-	invalid := []string{"bike", "bicycle", "submarine", "train"}
+	invalid := []string{"bike", "bicycle", "submarine"}
 	for _, raw := range invalid {
 		t.Run(raw, func(t *testing.T) {
 			_, err := NormalizeMode(raw)

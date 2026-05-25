@@ -7,7 +7,6 @@ import (
 	"log"
 	"math"
 	"strings"
-
 	"geo-service/internal/utils"
 )
 
@@ -15,11 +14,13 @@ import (
 type TransportMode string
 
 const (
-	ModeCar        TransportMode = "car"
-	ModeMotorcycle TransportMode = "motorcycle"
-	ModeBus        TransportMode = "bus"
-	ModeWalking    TransportMode = "walking"
-	ModeAirplane   TransportMode = "airplane"
+	ModeCar             TransportMode = "car"
+	ModeMotorcycle      TransportMode = "motorcycle"
+	ModeBus             TransportMode = "bus"
+	ModeWalking         TransportMode = "walking"
+	ModeAirplane        TransportMode = "airplane"
+	ModeTrain           TransportMode = "train"
+	ModePublicTransport TransportMode = "public_transport"
 )
 
 // Point is a geographic coordinate used for polyline encoding.
@@ -39,9 +40,11 @@ type Route struct {
 
 // Engine wraps the graph router with an automatic Haversine fallback.
 type Engine struct {
-	graph       *Graph
-	avgSpeedKmH float64
-	yenSpurCap  int // max spur positions per Yen's iteration; 0 = unlimited
+	graph        *Graph
+	railGraph    *Graph // optional; enables multi-modal train routing
+	transitGraph *Graph // optional; enables intra-city public transport routing
+	avgSpeedKmH  float64
+	yenSpurCap   int // max spur positions per Yen's iteration; 0 = unlimited
 }
 
 // NewEngineWithGraph creates an Engine backed by g.
@@ -50,6 +53,19 @@ type Engine struct {
 func NewEngineWithGraph(avgSpeedKmH float64, g *Graph, yenSpurCap int) *Engine {
 	return &Engine{avgSpeedKmH: avgSpeedKmH, graph: g, yenSpurCap: yenSpurCap}
 }
+
+// SetRailGraph attaches a rail network graph to enable train mode routing.
+func (e *Engine) SetRailGraph(g *Graph) { e.railGraph = g }
+
+// HasRailGraph reports whether a rail graph is loaded.
+func (e *Engine) HasRailGraph() bool { return e.railGraph != nil }
+
+// SetTransitGraph attaches the bus/metro overlay graph to enable public-transport
+// routing.
+func (e *Engine) SetTransitGraph(g *Graph) { e.transitGraph = g }
+
+// HasTransitGraph reports whether a transit graph is loaded.
+func (e *Engine) HasTransitGraph() bool { return e.transitGraph != nil }
 
 // NormalizeMode validates external mode/vehicle strings and applies the
 // service default. It accepts a few common aliases from Laravel/mobile clients.
@@ -60,14 +76,16 @@ func NormalizeMode(raw string) (TransportMode, error) {
 	}
 
 	switch mode {
-	case ModeCar, ModeMotorcycle, ModeBus, ModeWalking, ModeAirplane:
+	case ModeCar, ModeMotorcycle, ModeBus, ModeWalking, ModeAirplane, ModeTrain, ModePublicTransport:
 		return mode, nil
 	case "walk", "pedestrian", "foot":
 		return ModeWalking, nil
+	case "transit", "publictransport", "public-transport", "pt":
+		return ModePublicTransport, nil
 	case "bike", "bicycle":
-		return "", fmt.Errorf("unsupported routing mode %q; supported modes: car, motorcycle, bus, walking", raw)
+		return "", fmt.Errorf("unsupported routing mode %q; supported modes: car, motorcycle, bus, walking, train, public_transport", raw)
 	default:
-		return "", fmt.Errorf("unsupported routing mode %q; supported modes: car, motorcycle, bus, walking", raw)
+		return "", fmt.Errorf("unsupported routing mode %q; supported modes: car, motorcycle, bus, walking, train, public_transport", raw)
 	}
 }
 
@@ -162,6 +180,18 @@ var profiles = map[TransportMode]modeProfile{
 		fallbackSpeed:     5,
 		heuristicSpeedKmH: 6,
 	},
+	ModeTrain: {
+		edgeAllowed:       func(e *Edge) bool { return e.Flags.Has(FlagTrain) },
+		edgeSpeed:         trainSpeed,
+		fallbackSpeed:     80,
+		heuristicSpeedKmH: 200,
+	},
+	ModePublicTransport: {
+		edgeAllowed:       func(e *Edge) bool { return e.Flags.Has(FlagTransit) },
+		edgeSpeed:         transitSpeed,
+		fallbackSpeed:     20,
+		heuristicSpeedKmH: 40,
+	},
 }
 
 func minSpeed(a, b float64) float64 {
@@ -250,6 +280,39 @@ func busSpeed(e *Edge) float64 {
 	}
 }
 
+func trainSpeed(e *Edge) float64 {
+	switch e.Kind {
+	case HWRail:
+		return float64(e.SpeedKmH)
+	case HWSubway:
+		return 60
+	case HWLightRail:
+		return 50
+	case HWNarrowGauge:
+		return 40
+	case HWTram:
+		return 30
+	default:
+		return float64(e.SpeedKmH)
+	}
+}
+
+// transitSpeed returns the effective speed for a transit overlay edge. The
+// SpeedKmH stamped on the edge at graph-build time is authoritative, so this
+// just defers to it — the switch is here for readability and future tuning.
+func transitSpeed(e *Edge) float64 {
+	switch e.Kind {
+	case HWSubway:
+		return float64(e.SpeedKmH)
+	case HWBusRoute:
+		return float64(e.SpeedKmH)
+	case HWTransfer:
+		return float64(e.SpeedKmH)
+	default:
+		return float64(e.SpeedKmH)
+	}
+}
+
 func walkingAllowed(e *Edge) bool {
 	return e.Flags.Has(FlagFoot) && !e.Kind.BlocksWalking()
 }
@@ -333,6 +396,11 @@ func (e *Engine) graphRoutesCtx(ctx context.Context, startLat, startLng, endLat,
 }
 
 func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLng float64, mode TransportMode) *Route {
+	nameFor := e.graph.NameFor
+	return e.pathToRouteWithNameResolver(path, startLat, startLng, endLat, endLng, mode, nameFor)
+}
+
+func (e *Engine) pathToRouteWithNameResolver(path *PathResult, startLat, startLng, endLat, endLng float64, mode TransportMode, nameFor func(uint32) string) *Route {
 	points := make([]Point, 0, len(path.Nodes)+2)
 	appendPoint(&points, Point{Lat: startLat, Lng: startLng})
 	for _, n := range path.Nodes {
@@ -363,13 +431,11 @@ func (e *Engine) pathToRoute(path *PathResult, startLat, startLng, endLat, endLn
 		Duration: utils.Round(duration, 2),
 		Points:   points,
 		Polyline: EncodePolyline(points),
-		// Pass the graph's name resolver so buildInstructions can look up street
-		// names from the pool without storing them redundantly in Edge.
 		Instructions: buildInstructions(path, mode,
 			Point{Lat: startLat, Lng: startLng},
 			Point{Lat: endLat, Lng: endLng},
 			e.fallbackSpeed(mode),
-			e.graph.NameFor,
+			nameFor,
 		),
 	}
 }

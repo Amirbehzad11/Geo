@@ -2,6 +2,7 @@ package routing
 
 import (
 	"math"
+	"sync"
 
 	"geo-service/internal/utils"
 )
@@ -18,6 +19,8 @@ const (
 	FlagMotorcycle AccessFlags = 1 << 1
 	FlagBus        AccessFlags = 1 << 2
 	FlagFoot       AccessFlags = 1 << 3
+	FlagTrain      AccessFlags = 1 << 4
+	FlagTransit    AccessFlags = 1 << 5 // public transport overlay (bus + metro + transfer)
 )
 
 // Has returns true when all bits in flag are set in f.
@@ -93,6 +96,13 @@ type Graph struct {
 	// Name pool — index 0 is always the empty string.
 	namePool  []string
 	nameIndex map[string]uint32
+
+	// edgePolylines optionally holds the real-world geometry for an edge — used
+	// by the transit overlay so a "bus 5 between stops A and B" segment renders
+	// along actual streets instead of as a straight line. Populated lazily on
+	// first request; concurrent readers/writers are protected by edgePolyMu.
+	edgePolylines map[EdgeKey][]Point
+	edgePolyMu    sync.RWMutex
 }
 
 func NewGraph() *Graph {
@@ -273,4 +283,37 @@ func cellFor(lat, lng float64) cellKey {
 		Lat: int(math.Floor(lat / gridCellSizeDeg)),
 		Lng: int(math.Floor(lng / gridCellSizeDeg)),
 	}
+}
+
+// SetEdgePolyline stores the real-world geometry for a directed edge so that
+// downstream consumers (route-leg builders) can render the edge as the actual
+// driven/railed path instead of a straight line between its endpoints.
+// Thread-safe; callers may invoke from multiple goroutines.
+func (g *Graph) SetEdgePolyline(from, to int64, points []Point) {
+	g.edgePolyMu.Lock()
+	defer g.edgePolyMu.Unlock()
+	if g.edgePolylines == nil {
+		g.edgePolylines = make(map[EdgeKey][]Point)
+	}
+	g.edgePolylines[EdgeKey{From: from, To: to}] = points
+}
+
+// EdgePolyline returns the stored geometry for a directed edge, or (nil, false)
+// when no override exists. Returned slice is shared and must be treated as
+// read-only.
+func (g *Graph) EdgePolyline(from, to int64) ([]Point, bool) {
+	g.edgePolyMu.RLock()
+	defer g.edgePolyMu.RUnlock()
+	if g.edgePolylines == nil {
+		return nil, false
+	}
+	p, ok := g.edgePolylines[EdgeKey{From: from, To: to}]
+	return p, ok
+}
+
+// EdgePolylineCount reports how many edges have stored geometry overrides.
+func (g *Graph) EdgePolylineCount() int {
+	g.edgePolyMu.RLock()
+	defer g.edgePolyMu.RUnlock()
+	return len(g.edgePolylines)
 }

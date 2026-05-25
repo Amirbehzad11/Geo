@@ -30,10 +30,17 @@ const (
 	HWCrossing                         // crossing
 	HWSidewalk                         // sidewalk
 	HWPlatform                         // platform
+	HWRail                             // railway=rail
+	HWSubway                           // railway=subway
+	HWLightRail                        // railway=light_rail
+	HWNarrowGauge                      // railway=narrow_gauge
+	HWTram                             // railway=tram
+	HWBusRoute                         // synthetic: bus line segment between stops
+	HWTransfer                         // synthetic: short walking transfer between transit stops
 	hwKindCount                        // sentinel — must stay last
 )
 
-// hwKindStr maps each HighwayKind to its canonical OSM highway string.
+// hwKindStr maps each HighwayKind to its canonical OSM tag string.
 var hwKindStr = [hwKindCount]string{
 	HWUnknown:       "",
 	HWMotorway:      "motorway",
@@ -59,6 +66,13 @@ var hwKindStr = [hwKindCount]string{
 	HWCrossing:      "crossing",
 	HWSidewalk:      "sidewalk",
 	HWPlatform:      "platform",
+	HWRail:          "rail",
+	HWSubway:        "subway",
+	HWLightRail:     "light_rail",
+	HWNarrowGauge:   "narrow_gauge",
+	HWTram:          "tram",
+	HWBusRoute:      "bus_route",
+	HWTransfer:      "transfer",
 }
 
 var parseHighwayKindMap map[string]HighwayKind

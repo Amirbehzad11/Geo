@@ -141,6 +141,153 @@ CREATE INDEX IF NOT EXISTS idx_road_segments_imported_brin
 
 CREATE INDEX IF NOT EXISTS idx_road_segments_geom_gist
     ON road_segments USING GIST (geom);
+
+CREATE TABLE IF NOT EXISTS rail_segments (
+    id             BIGSERIAL PRIMARY KEY,
+    osm_way_id     BIGINT NOT NULL,
+    from_node_id   BIGINT NOT NULL,
+    to_node_id     BIGINT NOT NULL,
+    railway_type   TEXT NOT NULL,
+    name           TEXT NOT NULL DEFAULT '',
+    speed_kmh      DOUBLE PRECISION NOT NULL,
+    distance_km    DOUBLE PRECISION NOT NULL,
+    bidirectional  BOOLEAN NOT NULL DEFAULT TRUE,
+    from_lat       DOUBLE PRECISION NOT NULL,
+    from_lng       DOUBLE PRECISION NOT NULL,
+    to_lat         DOUBLE PRECISION NOT NULL,
+    to_lng         DOUBLE PRECISION NOT NULL,
+    geom           GEOGRAPHY(LINESTRING, 4326) NOT NULL,
+    import_region  TEXT NOT NULL DEFAULT '',
+    imported_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rail_segments_from_node
+    ON rail_segments (from_node_id);
+
+CREATE INDEX IF NOT EXISTS idx_rail_segments_to_node
+    ON rail_segments (to_node_id);
+
+CREATE INDEX IF NOT EXISTS idx_rail_segments_geom_gist
+    ON rail_segments USING GIST (geom);
+
+CREATE INDEX IF NOT EXISTS idx_rail_segments_region
+    ON rail_segments (import_region);
+
+CREATE TABLE IF NOT EXISTS rail_stations (
+    id            BIGSERIAL PRIMARY KEY,
+    osm_node_id   BIGINT NOT NULL,
+    name          TEXT NOT NULL DEFAULT '',
+    name_en       TEXT NOT NULL DEFAULT '',
+    station_type  TEXT NOT NULL,
+    lat           DOUBLE PRECISION NOT NULL,
+    lng           DOUBLE PRECISION NOT NULL,
+    geom          GEOGRAPHY(POINT, 4326) NOT NULL,
+    import_region TEXT NOT NULL DEFAULT '',
+    imported_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (osm_node_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rail_stations_geom_gist
+    ON rail_stations USING GIST (geom);
+
+CREATE INDEX IF NOT EXISTS idx_rail_stations_type
+    ON rail_stations (station_type);
+
+CREATE INDEX IF NOT EXISTS idx_rail_stations_region
+    ON rail_stations (import_region);
+
+CREATE TABLE IF NOT EXISTS bus_stops (
+    id            BIGSERIAL PRIMARY KEY,
+    osm_node_id   BIGINT NOT NULL,
+    name          TEXT NOT NULL DEFAULT '',
+    name_en       TEXT NOT NULL DEFAULT '',
+    city          TEXT NOT NULL,
+    lat           DOUBLE PRECISION NOT NULL,
+    lng           DOUBLE PRECISION NOT NULL,
+    geom          GEOGRAPHY(POINT, 4326) NOT NULL,
+    imported_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (osm_node_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bus_stops_geom_gist
+    ON bus_stops USING GIST (geom);
+
+CREATE INDEX IF NOT EXISTS idx_bus_stops_city
+    ON bus_stops (city);
+
+CREATE TABLE IF NOT EXISTS bus_lines (
+    id              BIGSERIAL PRIMARY KEY,
+    osm_relation_id BIGINT NOT NULL,
+    ref             TEXT NOT NULL DEFAULT '',
+    name            TEXT NOT NULL DEFAULT '',
+    operator        TEXT NOT NULL DEFAULT '',
+    city            TEXT NOT NULL,
+    color           TEXT NOT NULL DEFAULT '',
+    imported_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (osm_relation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bus_lines_city
+    ON bus_lines (city);
+
+CREATE INDEX IF NOT EXISTS idx_bus_lines_ref
+    ON bus_lines (city, ref);
+
+CREATE TABLE IF NOT EXISTS bus_line_stops (
+    line_id        BIGINT NOT NULL REFERENCES bus_lines(id) ON DELETE CASCADE,
+    stop_id        BIGINT NOT NULL REFERENCES bus_stops(id) ON DELETE CASCADE,
+    stop_sequence  INT NOT NULL,
+    PRIMARY KEY (line_id, stop_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bus_line_stops_stop
+    ON bus_line_stops (stop_id);
+
+CREATE TABLE IF NOT EXISTS metro_stations (
+    id            BIGSERIAL PRIMARY KEY,
+    osm_node_id   BIGINT NOT NULL,
+    name          TEXT NOT NULL DEFAULT '',
+    name_en       TEXT NOT NULL DEFAULT '',
+    city          TEXT NOT NULL,
+    lat           DOUBLE PRECISION NOT NULL,
+    lng           DOUBLE PRECISION NOT NULL,
+    geom          GEOGRAPHY(POINT, 4326) NOT NULL,
+    imported_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (osm_node_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_metro_stations_geom_gist
+    ON metro_stations USING GIST (geom);
+
+CREATE INDEX IF NOT EXISTS idx_metro_stations_city
+    ON metro_stations (city);
+
+CREATE TABLE IF NOT EXISTS metro_lines (
+    id              BIGSERIAL PRIMARY KEY,
+    osm_relation_id BIGINT NOT NULL,
+    ref             TEXT NOT NULL DEFAULT '',
+    name            TEXT NOT NULL DEFAULT '',
+    city            TEXT NOT NULL,
+    color           TEXT NOT NULL DEFAULT '',
+    imported_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (osm_relation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_metro_lines_city
+    ON metro_lines (city);
+
+CREATE INDEX IF NOT EXISTS idx_metro_lines_ref
+    ON metro_lines (city, ref);
+
+CREATE TABLE IF NOT EXISTS metro_line_stations (
+    line_id          BIGINT NOT NULL REFERENCES metro_lines(id) ON DELETE CASCADE,
+    station_id       BIGINT NOT NULL REFERENCES metro_stations(id) ON DELETE CASCADE,
+    station_sequence INT NOT NULL,
+    PRIMARY KEY (line_id, station_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_metro_line_stations_station
+    ON metro_line_stations (station_id);
 `
 
 func (p *Postgres) migrate(ctx context.Context) error {

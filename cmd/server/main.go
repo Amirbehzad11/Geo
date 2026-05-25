@@ -246,20 +246,58 @@ func newRoutingEngine(ctx context.Context, cfg *config.Config, pg *storage.Postg
 		return nil, fmt.Errorf("POSTGRES_DSN is required: PostGIS road graph unavailable")
 	}
 
-	timeout := time.Duration(cfg.RoadGraphLoadSec) * time.Second
-	if timeout <= 0 {
-		timeout = 180 * time.Second
-	}
+	timeout := graphLoadTimeout(cfg.RoadGraphLoadSec)
 
-	loadCtx, cancel := context.WithTimeout(ctx, timeout)
-	g, err := pg.LoadRoadGraphRegions(loadCtx, cfg.RoadGraphRegions)
-	cancel()
+	roadGraph, err := loadGraphWithTimeout(ctx, timeout, func(c context.Context) (*routing.Graph, error) {
+		return pg.LoadRoadGraphRegions(c, cfg.RoadGraphRegions)
+	})
 	if err != nil {
 		return nil, err
 	}
+	slog.Info("road network loaded", "nodes", roadGraph.NodeCount(), "yen_spur_cap", cfg.RoutingYenSpurCap)
+	engine := routing.NewEngineWithGraph(cfg.AvgSpeedKmH, roadGraph, cfg.RoutingYenSpurCap)
 
-	slog.Info("road network loaded", "nodes", g.NodeCount(), "yen_spur_cap", cfg.RoutingYenSpurCap)
-	return routing.NewEngineWithGraph(cfg.AvgSpeedKmH, g, cfg.RoutingYenSpurCap), nil
+	// Rail graph is optional — missing data only disables train mode (returns 503).
+	railGraph, err := loadGraphWithTimeout(ctx, timeout, func(c context.Context) (*routing.Graph, error) {
+		return pg.LoadRailGraph(c)
+	})
+	if err != nil {
+		slog.Warn("rail graph not loaded; train routing will be unavailable", "err", err)
+	} else {
+		engine.SetRailGraph(railGraph)
+		slog.Info("rail network loaded", "nodes", railGraph.NodeCount())
+	}
+
+	// Transit overlay (bus + metro for supported cities) is optional too —
+	// without it ModePublicTransport returns 503.
+	transitGraph, err := loadGraphWithTimeout(ctx, timeout, func(c context.Context) (*routing.Graph, error) {
+		return pg.LoadTransitGraph(c)
+	})
+	if err != nil {
+		slog.Warn("transit graph not loaded; public-transport routing will be unavailable", "err", err)
+	} else {
+		engine.SetTransitGraph(transitGraph)
+		slog.Info("transit network loaded", "nodes", transitGraph.NodeCount())
+		// Per-edge polylines are computed lazily on first use (see
+		// engine.ensureEdgePolyline) — startup-time enrichment was disabled
+		// because warming all ~25k edges in parallel OOM'd the container on
+		// memory-constrained hosts.
+	}
+
+	return engine, nil
+}
+
+func graphLoadTimeout(seconds int64) time.Duration {
+	if seconds <= 0 {
+		return 180 * time.Second
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func loadGraphWithTimeout(ctx context.Context, timeout time.Duration, load func(context.Context) (*routing.Graph, error)) (*routing.Graph, error) {
+	loadCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return load(loadCtx)
 }
 
 func buildRouteBackend(cfg *config.Config, engine *routing.Engine, loader func(context.Context) (*routing.Engine, error)) service.RouteBackend {

@@ -13,7 +13,6 @@ import (
 	"geo-service/internal/response"
 	"geo-service/internal/routing"
 	"geo-service/internal/service"
-	"geo-service/internal/utils"
 )
 
 // RouteHandler exposes the route-calculation endpoint.
@@ -49,12 +48,10 @@ func (h *RouteHandler) Calculate(c *gin.Context) {
 		return
 	}
 
-	if !utils.ValidCoords(req.StartLat, req.StartLng) {
-		response.ValidationFail(c, "start coordinates out of valid range (-90 ≤ lat ≤ 90, -180 ≤ lng ≤ 180)")
+	if !validateCoords(c, req.StartLat, req.StartLng) {
 		return
 	}
-	if !utils.ValidCoords(req.EndLat, req.EndLng) {
-		response.ValidationFail(c, "end coordinates out of valid range (-90 ≤ lat ≤ 90, -180 ≤ lng ≤ 180)")
+	if !validateCoords(c, req.EndLat, req.EndLng) {
 		return
 	}
 
@@ -73,6 +70,9 @@ func (h *RouteHandler) Calculate(c *gin.Context) {
 
 	if err != nil {
 		status, code, message := routeErrorResponse(err)
+		if status >= 500 {
+			slog.Error("route calculation failed", "err", err, "backend", meta.Backend, "mode", meta.Mode)
+		}
 		recordRouteErrorMetric(meta, err)
 		logRouteRequest(meta, elapsed, status)
 		response.Fail(c, status, code, message)
@@ -87,18 +87,7 @@ func (h *RouteHandler) Calculate(c *gin.Context) {
 }
 
 func routeErrorResponse(err error) (int, string, string) {
-	switch {
-	case errors.Is(err, service.ErrRoutingOverloaded):
-		return http.StatusServiceUnavailable, "ROUTING_OVERLOADED", "routing engine is busy; please retry in a moment"
-	case errors.Is(err, service.ErrRoutingTimeout):
-		return http.StatusGatewayTimeout, "ROUTING_TIMEOUT", "routing backend timed out; please retry in a moment"
-	case errors.Is(err, service.ErrRouteNotFound):
-		return http.StatusNotFound, "ROUTE_NOT_FOUND", "no route found between the given coordinates"
-	case errors.Is(err, service.ErrRoutingBackendUnavailable):
-		return http.StatusServiceUnavailable, "ROUTING_BACKEND_UNAVAILABLE", "routing backend is unavailable"
-	default:
-		return http.StatusInternalServerError, "ROUTING_ERROR", err.Error()
-	}
+	return mapServiceError(err)
 }
 
 func recordRouteErrorMetric(meta service.RouteMeta, err error) {

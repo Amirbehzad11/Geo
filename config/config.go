@@ -54,50 +54,26 @@ type Config struct {
 }
 
 func Load() *Config {
-	redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
-	avgSpeed, _ := strconv.ParseFloat(getEnv("AVG_SPEED_KMH", "40"), 64)
-	rateLimitMs, _ := strconv.ParseInt(getEnv("GPS_RATE_LIMIT_MS", "3000"), 10, 64)
-	deviationThresh, _ := strconv.ParseFloat(getEnv("DEVIATION_THRESH_KM", "0.05"), 64)
-	batchSize, _ := strconv.Atoi(getEnv("BATCH_SIZE", "500"))
-	batchFlushSec, _ := strconv.ParseInt(getEnv("BATCH_FLUSH_SEC", "2"), 10, 64)
-	roadGraphLoadSec, _ := strconv.ParseInt(getEnv("ROAD_GRAPH_LOAD_TIMEOUT_SEC", "180"), 10, 64)
-	apiKeyEnabled, _ := strconv.ParseBool(getEnv("API_KEY_ENABLED", "false"))
-	shipmentRadiusKm, _ := strconv.ParseFloat(getEnv("SHIPMENT_SEARCH_RADIUS_KM", "10"), 64)
-	shipmentLimit, _ := strconv.Atoi(getEnv("SHIPMENT_SEARCH_LIMIT", "100"))
-	driverRadiusKm, _ := strconv.ParseFloat(getEnv("DRIVER_SEARCH_RADIUS_KM", "20"), 64)
-
 	corsOrigins := splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "*"))
 	if len(corsOrigins) == 0 {
 		corsOrigins = []string{"*"}
 	}
 
-	routingMaxInFlight, _ := strconv.Atoi(getEnv("ROUTING_MAX_IN_FLIGHT", "100"))
-	internalMaxInFlight, _ := strconv.Atoi(getEnv("INTERNAL_ROUTING_MAX_IN_FLIGHT", strconv.Itoa(defaultInternalRoutingLimit())))
-	osrmMaxInFlight, _ := strconv.Atoi(getEnv("OSRM_ROUTING_MAX_IN_FLIGHT", "100"))
-	routingTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_TIMEOUT_MS", "30000"), 10, 64)
-	routingQueueTimeoutMs, _ := strconv.ParseInt(getEnv("ROUTING_QUEUE_TIMEOUT_MS", "1000"), 10, 64)
-	routingYenSpurCap, _ := strconv.Atoi(getEnv("ROUTING_YEN_SPUR_CAP", "60"))
-	routingMaxAlternatives, _ := strconv.Atoi(getEnv("ROUTING_MAX_ALTERNATIVES", "1"))
-	routeCachePrecision, _ := strconv.Atoi(getEnv("ROUTE_CACHE_PRECISION", "5"))
-	internalGraphEnabled, _ := strconv.ParseBool(getEnv("INTERNAL_GRAPH_ENABLED", "true"))
-	internalGraphLazyLoad, _ := strconv.ParseBool(getEnv("INTERNAL_GRAPH_LAZY_LOAD", "false"))
-	internalGraphRequired, _ := strconv.ParseBool(getEnv("INTERNAL_GRAPH_REQUIRED", "true"))
-
 	return &Config{
 		Port:               getEnv("PORT", "8080"),
 		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
-		RedisDB:            redisDB,
-		AvgSpeedKmH:        avgSpeed,
-		GPSRateLimitMs:     rateLimitMs,
+		RedisDB:            getEnvInt("REDIS_DB", 0),
+		AvgSpeedKmH:        getEnvFloat("AVG_SPEED_KMH", 40),
+		GPSRateLimitMs:     getEnvInt64("GPS_RATE_LIMIT_MS", 3000),
 		PostgresDSN:        getEnv("POSTGRES_DSN", ""),
 		RoadGraphRegions:   splitCSV(getEnv("ROAD_GRAPH_REGIONS", "")),
-		RoadGraphLoadSec:   roadGraphLoadSec,
-		DeviationThreshKm:  deviationThresh,
-		BatchSize:          batchSize,
-		BatchFlushSec:      batchFlushSec,
+		RoadGraphLoadSec:   getEnvInt64("ROAD_GRAPH_LOAD_TIMEOUT_SEC", 180),
+		DeviationThreshKm:  getEnvFloat("DEVIATION_THRESH_KM", 0.05),
+		BatchSize:          getEnvInt("BATCH_SIZE", 500),
+		BatchFlushSec:      getEnvInt64("BATCH_FLUSH_SEC", 2),
 		CORSAllowedOrigins: corsOrigins,
-		APIKeyEnabled:      apiKeyEnabled,
+		APIKeyEnabled:      getEnvBool("API_KEY_ENABLED", false),
 		APIKey:             getEnv("API_KEY", ""),
 
 		ShipmentDBDriver:        getEnv("SHIPMENT_DB_DRIVER", "mysql"),
@@ -105,32 +81,68 @@ func Load() *Config {
 		ShipmentTable:           getEnv("SHIPMENT_TABLE", "shipment"),
 		ShipmentOriginLatColumn: getEnv("SHIPMENT_ORIGIN_LAT_COLUMN", "origin_lat"),
 		ShipmentOriginLngColumn: getEnv("SHIPMENT_ORIGIN_LNG_COLUMN", "origin_lng"),
-		ShipmentSearchRadiusKm:  shipmentRadiusKm,
-		ShipmentSearchLimit:     shipmentLimit,
+		ShipmentSearchRadiusKm:  getEnvFloat("SHIPMENT_SEARCH_RADIUS_KM", 10),
+		ShipmentSearchLimit:     getEnvInt("SHIPMENT_SEARCH_LIMIT", 100),
 
 		DriverGeoKey:            getEnv("DRIVER_GEO_KEY", "drivers:geo"),
 		DriverLocationStreamKey: getEnv("DRIVER_LOCATION_STREAM_KEY", "driver:locations:stream"),
-		DriverSearchRadiusKm:    driverRadiusKm,
+		DriverSearchRadiusKm:    getEnvFloat("DRIVER_SEARCH_RADIUS_KM", 20),
 
 		RoutingBackend:         getEnv("ROUTING_BACKEND", "internal"),
 		OSRMBaseURL:            getEnv("OSRM_BASE_URL", "http://osrm:5000"),
-		RoutingTimeoutMs:       routingTimeoutMs,
-		RoutingMaxInFlight:     routingMaxInFlight,
-		InternalMaxInFlight:    internalMaxInFlight,
-		OSRMMaxInFlight:        osrmMaxInFlight,
-		RoutingQueueTimeoutMs:  routingQueueTimeoutMs,
-		RoutingYenSpurCap:      routingYenSpurCap,
-		RoutingMaxAlternatives: routingMaxAlternatives,
-		RouteCachePrecision:    routeCachePrecision,
-		InternalGraphEnabled:   internalGraphEnabled,
-		InternalGraphLazyLoad:  internalGraphLazyLoad,
-		InternalGraphRequired:  internalGraphRequired,
+		RoutingTimeoutMs:       getEnvInt64("ROUTING_TIMEOUT_MS", 30000),
+		RoutingMaxInFlight:     getEnvInt("ROUTING_MAX_IN_FLIGHT", 100),
+		InternalMaxInFlight:    getEnvInt("INTERNAL_ROUTING_MAX_IN_FLIGHT", defaultInternalRoutingLimit()),
+		OSRMMaxInFlight:        getEnvInt("OSRM_ROUTING_MAX_IN_FLIGHT", 100),
+		RoutingQueueTimeoutMs:  getEnvInt64("ROUTING_QUEUE_TIMEOUT_MS", 1000),
+		RoutingYenSpurCap:      getEnvInt("ROUTING_YEN_SPUR_CAP", 60),
+		RoutingMaxAlternatives: getEnvInt("ROUTING_MAX_ALTERNATIVES", 1),
+		RouteCachePrecision:    getEnvInt("ROUTE_CACHE_PRECISION", 5),
+		InternalGraphEnabled:   getEnvBool("INTERNAL_GRAPH_ENABLED", true),
+		InternalGraphLazyLoad:  getEnvBool("INTERNAL_GRAPH_LAZY_LOAD", false),
+		InternalGraphRequired:  getEnvBool("INTERNAL_GRAPH_REQUIRED", true),
 	}
 }
 
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
 	}
 	return fallback
 }

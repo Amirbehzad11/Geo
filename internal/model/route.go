@@ -11,15 +11,28 @@ type RouteRequest struct {
 	Alternatives int     `json:"alternatives"` // requested route count, clamped server-side
 }
 
+// RouteLeg is one segment of a multi-modal journey (e.g. walk, then train).
+type RouteLeg struct {
+	Mode         string             `json:"mode"`
+	DistanceKm   float64            `json:"distance_km"`
+	DurationMin  float64            `json:"duration_min"`
+	Polyline     string             `json:"polyline"`
+	Instructions []RouteInstruction `json:"instructions,omitempty"`
+}
+
 type RouteResponse struct {
 	// Backward-compatible primary route fields.
 	Distance float64 `json:"distance"` // km
 	Duration float64 `json:"duration"` // minutes
-	Polyline string  `json:"polyline"` // Google Encoded Polyline
+	Polyline string  `json:"polyline"` // Google Encoded Polyline (combined for multi-modal)
 
 	Mode    string        `json:"mode"`
 	Primary RouteOption   `json:"primary"`
 	Routes  []RouteOption `json:"-"`
+
+	// Legs is populated for multi-modal routes (e.g. train mode).
+	// Each leg has its own mode, polyline, and instructions.
+	Legs []RouteLeg `json:"legs,omitempty"`
 }
 
 type RouteOption struct {
