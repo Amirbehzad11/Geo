@@ -2,6 +2,9 @@
 /data
 /.claude
 /.gotmp
+/.idea
+/server.exe
+/osm2transit.exe
 osm2graph.exe
 osm2graph_legacy.exe
 osm2postgis.exe

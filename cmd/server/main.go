@@ -33,12 +33,20 @@ import (
 	_ "geo-service/docs"
 	"geo-service/internal/cache"
 	"geo-service/internal/events"
+	gpsapi "geo-service/internal/gps"
 	"geo-service/internal/handler"
 	"geo-service/internal/middleware"
+	routeapi "geo-service/internal/route"
 	"geo-service/internal/routing"
 	"geo-service/internal/service"
 	"geo-service/internal/storage"
 	"geo-service/internal/ws"
+)
+
+const (
+	shipmentDBConnectAttemptTimeout = 10 * time.Second
+	shipmentDBConnectRetryWindow    = 90 * time.Second
+	shipmentDBConnectRetryDelay     = 3 * time.Second
 )
 
 func main() {
@@ -71,15 +79,7 @@ func main() {
 		slog.Info("postgres disabled — POSTGRES_DSN not set")
 	}
 
-	shipmentCtx, shipmentCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	shipmentDB, err := storage.NewShipmentDB(shipmentCtx, storage.ShipmentDBConfig{
-		Driver:    cfg.ShipmentDBDriver,
-		DSN:       cfg.ShipmentDBDSN,
-		Table:     cfg.ShipmentTable,
-		LatColumn: cfg.ShipmentOriginLatColumn,
-		LngColumn: cfg.ShipmentOriginLngColumn,
-	})
-	shipmentCancel()
+	shipmentDB, err := connectShipmentDB(context.Background(), cfg)
 	switch {
 	case err != nil:
 		// Shipment DB is optional — a connection failure disables the feature
@@ -102,14 +102,15 @@ func main() {
 	routeBackend := buildRouteBackend(cfg, internalEngine, internalLoader)
 
 	// ---- services ---------------------------------------------------------------
-	routeSvc := service.NewRouteService(routeBackend, redisClient, eventBus, pg, service.RouteServiceConfig{
+	routeSvc := routeapi.NewRouteService(routeBackend, redisClient, eventBus, pg, routeapi.RouteServiceConfig{
 		MaxInFlight:         cfg.RoutingMaxInFlight,
 		QueueTimeoutMs:      cfg.RoutingQueueTimeoutMs,
 		RouteTimeoutMs:      cfg.RoutingTimeoutMs,
 		RouteCachePrecision: cfg.RouteCachePrecision,
 		MaxAlternatives:     cfg.RoutingMaxAlternatives,
 	})
-	gpsSvc := service.NewGPSService(redisClient, eventBus, cfg.GPSRateLimitMs, cfg.DeviationThreshKm)
+	multiRouteSvc := routeapi.NewMultiRouteService(routeSvc)
+	gpsSvc := gpsapi.NewGPSService(redisClient, eventBus, cfg.GPSRateLimitMs, cfg.DeviationThreshKm)
 	driverSvc := service.NewDriverService(redisClient, cfg.DriverGeoKey, cfg.DriverLocationStreamKey, cfg.DriverSearchRadiusKm, cfg.ShipmentSearchLimit)
 	var shipmentSvc *service.ShipmentService
 	if shipmentDB != nil {
@@ -118,10 +119,22 @@ func main() {
 
 	// ---- handlers ---------------------------------------------------------------
 	healthH := handler.NewHealthHandler(redisClient)
-	routeH := handler.NewRouteHandler(routeSvc)
-	gpsH := handler.NewGPSHandler(gpsSvc)
+	routeH := routeapi.NewRouteHandler(routeSvc)
+	multiRouteH := routeapi.NewMultiRouteHandler(multiRouteSvc)
+	if shipmentDB != nil {
+		routeH = routeapi.NewRouteHandler(routeSvc, shipmentDB)
+		multiRouteH = routeapi.NewMultiRouteHandler(multiRouteSvc, shipmentDB)
+	}
+	gpsH := gpsapi.NewGPSHandler(gpsSvc)
+	if shipmentDB != nil {
+		gpsH = gpsapi.NewGPSHandler(gpsSvc, shipmentDB)
+	}
 	driverH := handler.NewDriverHandler(driverSvc)
+	handler.ConfigureWebSocketOrigins(cfg.CORSAllowedOrigins)
 	wsH := handler.NewWSHandler(hub)
+	if shipmentDB != nil {
+		wsH = handler.NewWSHandler(hub, shipmentDB)
+	}
 	shipmentWSH := handler.NewShipmentWSHandler(shipmentSvc, driverSvc)
 
 	// ---- background workers -----------------------------------------------------
@@ -143,15 +156,36 @@ func main() {
 	}
 
 	r := gin.New()
+	if err := r.SetTrustedProxies(nil); err != nil {
+		log.Fatalf("gin trusted proxies: %v", err)
+	}
 	r.Use(
 		middleware.CORS(cfg.CORSAllowedOrigins),
 		middleware.StructuredLogger(),
 		gin.Recovery(),
+		middleware.RequestBodyLimit(cfg.RequestBodyLimit),
+		middleware.IPRateLimit(cfg.RateLimitPerMin),
 		middleware.RequestMetrics(),
 	)
-	if cfg.APIKeyEnabled && cfg.APIKey != "" {
-		r.Use(middleware.APIKeyAuth(cfg.APIKey))
-		slog.Info("API key authentication enabled")
+	if cfg.APIKeyEnabled && strings.TrimSpace(cfg.APIKey) == "" {
+		log.Fatal("API_KEY_ENABLED=true requires API_KEY")
+	}
+	if cfg.JWTAuthEnabled && strings.TrimSpace(cfg.JWTSecret) == "" {
+		log.Fatal("JWT_AUTH_ENABLED=true requires JWT_SECRET")
+	}
+	if cfg.APIKeyEnabled || cfg.JWTAuthEnabled {
+		r.Use(middleware.Auth(middleware.AuthOptions{
+			APIKey:       cfg.APIKey,
+			JWTSecret:    cfg.JWTSecret,
+			JWTAlgorithm: cfg.JWTAlgorithm,
+		}))
+		slog.Info("authentication enabled",
+			"api_key", cfg.APIKeyEnabled,
+			"jwt", cfg.JWTAuthEnabled,
+			"jwt_alg", cfg.JWTAlgorithm,
+		)
+	} else {
+		slog.Warn("authentication disabled; enable API_KEY_ENABLED or JWT_AUTH_ENABLED in production")
 	}
 
 	r.GET("/health", healthH.Check)
@@ -159,6 +193,7 @@ func main() {
 	r.GET("/docs/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	r.POST("/route", routeH.Calculate)
+	r.POST("/route/waypoints", multiRouteH.Calculate)
 	r.POST("/driver-location", driverH.UpdateLocation)
 
 	gps := r.Group("/gps")
@@ -202,6 +237,76 @@ func main() {
 		pg.Close()
 	}
 	slog.Info("stopped")
+}
+
+func connectShipmentDB(ctx context.Context, cfg *config.Config) (*storage.ShipmentDB, error) {
+	return connectShipmentDBWithRetry(ctx, cfg, shipmentDBConnectRetryWindow, shipmentDBConnectRetryDelay)
+}
+
+func connectShipmentDBWithRetry(ctx context.Context, cfg *config.Config, retryWindow, retryDelay time.Duration) (*storage.ShipmentDB, error) {
+	if cfg == nil || strings.TrimSpace(cfg.ShipmentDBDSN) == "" {
+		return nil, nil
+	}
+
+	dbCfg := storage.ShipmentDBConfig{
+		Driver:                 cfg.ShipmentDBDriver,
+		DSN:                    cfg.ShipmentDBDSN,
+		Table:                  cfg.ShipmentTable,
+		LocationColumn:         cfg.ShipmentOriginLocationColumn,
+		EndLocationColumn:      cfg.ShipmentEndLocationColumn,
+		VehicleBoxSizesTable:   cfg.VehicleBoxSizesTable,
+		VehicleIDColumn:        cfg.VehicleIDColumn,
+		VehicleWeightColumn:    cfg.VehicleWeightColumn,
+		VehicleTypesTable:      cfg.VehicleTypesTable,
+		VehicleTypeLabelColumn: cfg.VehicleTypeLabelColumn,
+		VehicleTypeTitleColumn: cfg.VehicleTypeTitleColumn,
+		ContentTypesTable:      cfg.ContentTypesTable,
+		ContentTypeIDColumn:    cfg.ContentTypeIDColumn,
+		ContentTypeImageColumn: cfg.ContentTypeImageColumn,
+	}
+
+	deadline := time.Now().Add(retryWindow)
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		attemptTimeout := shipmentDBConnectAttemptTimeout
+		if remaining := time.Until(deadline); retryWindow > 0 && remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		if attemptTimeout <= 0 {
+			return nil, lastErr
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		db, err := storage.NewShipmentDB(attemptCtx, dbCfg)
+		cancel()
+		if err == nil {
+			return db, nil
+		}
+		lastErr = err
+
+		if retryWindow <= 0 || retryDelay <= 0 || time.Now().Add(retryDelay).After(deadline) {
+			return nil, lastErr
+		}
+
+		slog.Warn("shipment db connection failed; retrying",
+			"attempt", attempt,
+			"err", err,
+			"retry_in_ms", retryDelay.Milliseconds(),
+		)
+
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func prepareInternalRouting(cfg *config.Config, pg *storage.Postgres) (*routing.Engine, func(context.Context) (*routing.Engine, error)) {
@@ -300,24 +405,24 @@ func loadGraphWithTimeout(ctx context.Context, timeout time.Duration, load func(
 	return load(loadCtx)
 }
 
-func buildRouteBackend(cfg *config.Config, engine *routing.Engine, loader func(context.Context) (*routing.Engine, error)) service.RouteBackend {
+func buildRouteBackend(cfg *config.Config, engine *routing.Engine, loader func(context.Context) (*routing.Engine, error)) routeapi.RouteBackend {
 	queueTimeout := time.Duration(cfg.RoutingQueueTimeoutMs) * time.Millisecond
-	internal := service.NewInternalBackendWithConfig(service.InternalBackendConfig{
+	internal := routeapi.NewInternalBackendWithConfig(routeapi.InternalBackendConfig{
 		Engine:       engine,
 		AvgSpeedKmH:  cfg.AvgSpeedKmH,
 		GraphEnabled: cfg.InternalGraphEnabled,
 		LazyLoad:     cfg.InternalGraphLazyLoad,
 		LoadEngine:   loader,
 	})
-	internalLimited := service.NewLimitedBackend(internal, cfg.InternalMaxInFlight, queueTimeout, "internal")
+	internalLimited := routeapi.NewLimitedBackend(internal, cfg.InternalMaxInFlight, queueTimeout, "internal")
 
 	if strings.EqualFold(cfg.RoutingBackend, "osrm") && cfg.OSRMBaseURL != "" {
 		timeout := time.Duration(cfg.RoutingTimeoutMs) * time.Millisecond
 		if timeout <= 0 {
 			timeout = 10 * time.Second
 		}
-		osrmBackend := service.NewOSRMBackend(cfg.OSRMBaseURL, timeout)
-		osrmLimited := service.NewLimitedBackend(osrmBackend, cfg.OSRMMaxInFlight, queueTimeout, "osrm")
+		osrmBackend := routeapi.NewOSRMBackend(cfg.OSRMBaseURL, timeout)
+		osrmLimited := routeapi.NewLimitedBackend(osrmBackend, cfg.OSRMMaxInFlight, queueTimeout, "osrm")
 		slog.Info("routing backend: OSRM primary",
 			"osrm_url", cfg.OSRMBaseURL,
 			"timeout_ms", cfg.RoutingTimeoutMs,
@@ -325,7 +430,7 @@ func buildRouteBackend(cfg *config.Config, engine *routing.Engine, loader func(c
 			"internal_graph_enabled", cfg.InternalGraphEnabled,
 			"internal_graph_loaded", engine != nil && engine.HasGraph(),
 		)
-		return service.NewFallbackBackend(osrmLimited, internalLimited)
+		return routeapi.NewFallbackBackend(osrmLimited, internalLimited)
 	}
 
 	slog.Info("routing backend: internal A* + Yen's k-shortest-paths",

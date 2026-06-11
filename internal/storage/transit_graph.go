@@ -23,8 +23,8 @@ const (
 )
 
 type transitStop struct {
-	id   int64  // synthetic graph node ID
-	osm  int64  // OSM node ID (debugging only)
+	id   int64 // synthetic graph node ID
+	osm  int64 // OSM node ID (debugging only)
 	lat  float64
 	lng  float64
 	city string

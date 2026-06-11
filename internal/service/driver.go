@@ -90,6 +90,9 @@ func (s *DriverService) SearchNearby(ctx context.Context, lat, lng, radiusKm flo
 	if radiusKm <= 0 {
 		radiusKm = s.defaultRadiusKm
 	}
+	if radiusKm > maxNearbySearchRadiusKm {
+		radiusKm = maxNearbySearchRadiusKm
+	}
 	if limit <= 0 {
 		limit = s.defaultLimit
 	}

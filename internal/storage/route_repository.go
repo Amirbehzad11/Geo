@@ -7,13 +7,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"geo-service/internal/model"
+	"geo-service/internal/route"
 	"geo-service/internal/routing"
 )
 
 // SaveRouteCalculation stores a route request and every returned option in
 // PostGIS. Coordinates use ST_MakePoint(lng, lat), because PostGIS expects X/Y.
-func (p *Postgres) SaveRouteCalculation(ctx context.Context, req *model.RouteRequest, resp *model.RouteResponse) error {
+func (p *Postgres) SaveRouteCalculation(ctx context.Context, req *route.RouteRequest, resp *route.RouteResponse) error {
 	if p == nil || resp == nil || len(resp.Routes) == 0 {
 		return nil
 	}

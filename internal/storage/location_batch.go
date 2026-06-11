@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"geo-service/internal/events"
-	"geo-service/internal/model"
+	"geo-service/internal/gps"
 )
 
 // LocationBatchWriter subscribes to LocationUpdated events and bulk-inserts
@@ -42,7 +42,7 @@ func (w *LocationBatchWriter) Run(ctx context.Context) {
 	ticker := time.NewTicker(w.flushEvery)
 	defer ticker.Stop()
 
-	batch := make([]*model.LocationState, 0, w.batchSize)
+	batch := make([]*gps.LocationState, 0, w.batchSize)
 
 	flush := func() {
 		if len(batch) == 0 {
@@ -64,7 +64,7 @@ func (w *LocationBatchWriter) Run(ctx context.Context) {
 			if ev.Type != events.LocationUpdated {
 				continue
 			}
-			var state model.LocationState
+			var state gps.LocationState
 			if err := json.Unmarshal(ev.Payload, &state); err != nil {
 				continue
 			}
@@ -90,7 +90,7 @@ func (w *LocationBatchWriter) Run(ctx context.Context) {
 
 // insertBatch performs one set-based insert for all locations.
 // Uses ST_MakePoint(lng, lat) because PostGIS expects longitude first.
-func (w *LocationBatchWriter) insertBatch(ctx context.Context, locs []*model.LocationState) error {
+func (w *LocationBatchWriter) insertBatch(ctx context.Context, locs []*gps.LocationState) error {
 	const q = `
 		INSERT INTO trip_locations (trip_id, location, speed_kmh, timestamp)
 		SELECT

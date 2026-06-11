@@ -1,6 +1,26 @@
 basePath: /
 definitions:
-  geo-service_internal_model.GPSUpdate:
+  geo-service_internal_response.ErrorDetail:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  geo-service_internal_response.Failure:
+    properties:
+      error:
+        $ref: '#/definitions/geo-service_internal_response.ErrorDetail'
+      success:
+        type: boolean
+    type: object
+  geo-service_internal_response.Success:
+    properties:
+      data: {}
+      success:
+        type: boolean
+    type: object
+  internal_gps.GPSUpdate:
     properties:
       lat:
         type: number
@@ -12,7 +32,7 @@ definitions:
       trip_id:
         type: integer
     type: object
-  geo-service_internal_model.LocationState:
+  internal_gps.LocationState:
     properties:
       deviation_km:
         description: distance from planned route
@@ -28,7 +48,80 @@ definitions:
       trip_id:
         type: integer
     type: object
-  geo-service_internal_model.RouteOption:
+  internal_route.MultiRouteLeg:
+    properties:
+      distance_km:
+        type: number
+      duration_min:
+        type: number
+      from:
+        $ref: '#/definitions/internal_route.Waypoint'
+      to:
+        $ref: '#/definitions/internal_route.Waypoint'
+    type: object
+  internal_route.MultiRouteRequest:
+    properties:
+      mode:
+        type: string
+      trip_id:
+        type: integer
+      waypoints:
+        description: at least 2; first is the start
+        items:
+          $ref: '#/definitions/internal_route.Waypoint'
+        type: array
+    type: object
+  internal_route.MultiRouteResponse:
+    properties:
+      legs:
+        items:
+          $ref: '#/definitions/internal_route.MultiRouteLeg'
+        type: array
+      mode:
+        type: string
+      polyline:
+        description: combined path
+        type: string
+      total_distance_km:
+        type: number
+      total_duration_min:
+        type: number
+    type: object
+  internal_route.RouteInstruction:
+    properties:
+      distance_km:
+        type: number
+      duration_min:
+        type: number
+      index:
+        type: integer
+      location:
+        $ref: '#/definitions/internal_route.RoutePoint'
+      modifier:
+        type: string
+      street_name:
+        type: string
+      text:
+        type: string
+      type:
+        type: string
+    type: object
+  internal_route.RouteLeg:
+    properties:
+      distance_km:
+        type: number
+      duration_min:
+        type: number
+      instructions:
+        items:
+          $ref: '#/definitions/internal_route.RouteInstruction'
+        type: array
+      mode:
+        type: string
+      polyline:
+        type: string
+    type: object
+  internal_route.RouteOption:
     properties:
       distance_km:
         type: number
@@ -36,6 +129,10 @@ definitions:
         type: number
       id:
         type: integer
+      instructions:
+        items:
+          $ref: '#/definitions/internal_route.RouteInstruction'
+        type: array
       is_primary:
         type: boolean
       mode:
@@ -43,7 +140,14 @@ definitions:
       polyline:
         type: string
     type: object
-  geo-service_internal_model.RouteRequest:
+  internal_route.RoutePoint:
+    properties:
+      lat:
+        type: number
+      lng:
+        type: number
+    type: object
+  internal_route.RouteRequest:
     properties:
       alternatives:
         description: requested route count, clamped server-side
@@ -66,7 +170,7 @@ definitions:
         description: alias for mode, useful for Laravel payloads
         type: string
     type: object
-  geo-service_internal_model.RouteResponse:
+  internal_route.RouteResponse:
     properties:
       distance:
         description: Backward-compatible primary route fields.
@@ -74,46 +178,39 @@ definitions:
       duration:
         description: minutes
         type: number
+      legs:
+        description: |-
+          Legs is populated for multi-modal routes (e.g. train mode).
+          Each leg has its own mode, polyline, and instructions.
+        items:
+          $ref: '#/definitions/internal_route.RouteLeg'
+        type: array
       mode:
         type: string
       polyline:
-        description: Google Encoded Polyline
+        description: Google Encoded Polyline (combined for multi-modal)
         type: string
       primary:
-        $ref: '#/definitions/geo-service_internal_model.RouteOption'
-      routes:
-        items:
-          $ref: '#/definitions/geo-service_internal_model.RouteOption'
-        type: array
+        $ref: '#/definitions/internal_route.RouteOption'
     type: object
-  geo-service_internal_response.ErrorDetail:
+  internal_route.Waypoint:
     properties:
-      code:
+      label:
+        description: optional human-readable name
         type: string
-      message:
-        type: string
-    type: object
-  geo-service_internal_response.Failure:
-    properties:
-      error:
-        $ref: '#/definitions/geo-service_internal_response.ErrorDetail'
-      success:
-        type: boolean
-    type: object
-  geo-service_internal_response.Success:
-    properties:
-      data: {}
-      success:
-        type: boolean
+      lat:
+        type: number
+      lng:
+        type: number
     type: object
 host: localhost:8080
 info:
   contact:
     name: GitHub Issues
     url: https://github.com/Amirbehzad11/geo-service/issues
-  description: A production-ready geospatial routing microservice with a custom A*
-    + Yen's k-shortest-paths algorithm, live GPS tracking, WebSocket event delivery,
-    and a PostGIS-backed OSM road graph.
+  description: A production-ready geospatial routing microservice. Supports self-hosted
+    OSRM (default) with an automatic in-process A* + Yen's k-shortest-paths fallback,
+    live GPS tracking, WebSocket event delivery, and a PostGIS-backed OSM road graph.
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -140,7 +237,7 @@ paths:
             - $ref: '#/definitions/geo-service_internal_response.Success'
             - properties:
                 data:
-                  $ref: '#/definitions/geo-service_internal_model.LocationState'
+                  $ref: '#/definitions/internal_gps.LocationState'
               type: object
         "400":
           description: Invalid trip ID
@@ -167,7 +264,7 @@ paths:
         name: update
         required: true
         schema:
-          $ref: '#/definitions/geo-service_internal_model.GPSUpdate'
+          $ref: '#/definitions/internal_gps.GPSUpdate'
       produces:
       - application/json
       responses:
@@ -178,7 +275,7 @@ paths:
             - $ref: '#/definitions/geo-service_internal_response.Success'
             - properties:
                 data:
-                  $ref: '#/definitions/geo-service_internal_model.LocationState'
+                  $ref: '#/definitions/internal_gps.LocationState'
               type: object
         "400":
           description: Malformed JSON body
@@ -221,17 +318,17 @@ paths:
     post:
       consumes:
       - application/json
-      description: Computes the fastest route between two coordinates using A* search
-        over the OSM road graph, with Yen's k-shortest-paths algorithm for alternative
-        routes. Falls back to Haversine straight-line when the endpoints are outside
-        graph coverage.
+      description: Computes the fastest route between two coordinates. Uses the configured
+        routing backend (OSRM or internal A*), with automatic fallback to the internal
+        engine when the primary backend is unavailable. Falls back to a straight Haversine
+        estimate when endpoints lie outside graph coverage.
       parameters:
       - description: Route request
         in: body
         name: request
         required: true
         schema:
-          $ref: '#/definitions/geo-service_internal_model.RouteRequest'
+          $ref: '#/definitions/internal_route.RouteRequest'
       produces:
       - application/json
       responses:
@@ -242,10 +339,14 @@ paths:
             - $ref: '#/definitions/geo-service_internal_response.Success'
             - properties:
                 data:
-                  $ref: '#/definitions/geo-service_internal_model.RouteResponse'
+                  $ref: '#/definitions/internal_route.RouteResponse'
               type: object
         "400":
           description: Malformed JSON body
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "404":
+          description: No route found
           schema:
             $ref: '#/definitions/geo-service_internal_response.Failure'
         "422":
@@ -256,9 +357,78 @@ paths:
           description: Internal routing error
           schema:
             $ref: '#/definitions/geo-service_internal_response.Failure'
+        "503":
+          description: Routing backend unavailable or overloaded
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "504":
+          description: Routing backend timeout
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
       summary: Calculate a route
       tags:
       - routing
+  /route/waypoints:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Accepts a waypoint list (≥ 2) and a transport mode.
+        Keeps the first waypoint as the start, then reorders the rest
+        by nearest-neighbor (Haversine distance) before routing each
+        consecutive pair concurrently and stitching the polylines.
+      parameters:
+      - description: Waypoints + mode
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_route.MultiRouteRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/geo-service_internal_response.Success'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_route.MultiRouteResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+      summary: Calculate a multi-stop route
+      tags:
+      - routing
+  /ws/shipments/nearby:
+    get:
+      description: Receives lat/lng over WebSocket. type=passenger queries the Laravel
+        shipment table; type=sender searches nearby passengers in Redis.
+      responses:
+        "101":
+          description: Switching Protocols - WebSocket upgrade successful
+        "503":
+          description: Shipment database is not configured
+          schema:
+            $ref: '#/definitions/geo-service_internal_response.Failure'
+      summary: WebSocket - nearby shipments
+      tags:
+      - websocket
   /ws/trip/{id}:
     get:
       description: Upgrades the connection to WebSocket and streams real-time `location.updated`

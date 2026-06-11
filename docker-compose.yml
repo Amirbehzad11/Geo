@@ -155,15 +155,36 @@ services:
       SHIPMENT_DB_DRIVER: "postgres"
       SHIPMENT_DB_DSN: "${SHIPMENT_DB_DSN:-}"
       SHIPMENT_TABLE: "shipments"
-      SHIPMENT_ORIGIN_LAT_COLUMN: "start_lat"
-      SHIPMENT_ORIGIN_LNG_COLUMN: "start_lng"
-      SHIPMENT_SEARCH_RADIUS_KM: "10"
+      SHIPMENT_ORIGIN_LOCATION_COLUMN: "start_location"
+      SHIPMENT_END_LOCATION_COLUMN: "end_location"
+      SHIPMENT_SEARCH_RADIUS_KM: "2"
       SHIPMENT_SEARCH_LIMIT: "100"
 
+      VEHICLE_TYPES_TABLE:         "vehicle_types"
+      VEHICLE_TYPE_LABEL_COLUMN:   "label"
+      VEHICLE_TYPE_TITLE_COLUMN:    "title"
+
+      # Content types — joins content_types on content_type_id to add content_image
+      CONTENT_TYPES_TABLE:         "content_types"
+      CONTENT_TYPE_ID_COLUMN:      "content_type_id"
+      CONTENT_TYPE_IMAGE_COLUMN:   "image"
+
+      # Driver location search
+      DRIVER_GEO_KEY:              "drivers:geo"
+      DRIVER_LOCATION_STREAM_KEY:  "driver:locations:stream"
+      DRIVER_SEARCH_RADIUS_KM:     "20"
+
       # Public API settings
-      CORS_ALLOWED_ORIGINS: "*"
+      # Set this to your Laravel/frontend origin in production, for example:
+      # CORS_ALLOWED_ORIGINS: "https://app.example.com"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost:8000,http://localhost:5173}"
       API_KEY_ENABLED: "false"
       API_KEY: ""
+      JWT_AUTH_ENABLED: "${JWT_AUTH_ENABLED:-true}"
+      JWT_SECRET: "${JWT_SECRET:-}"
+      JWT_ALGO: "${JWT_ALGO:-HS256}"
+      RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-300}"
+      REQUEST_BODY_LIMIT_BYTES: "${REQUEST_BODY_LIMIT_BYTES:-1048576}"
     depends_on:
       redis:
         condition: service_healthy

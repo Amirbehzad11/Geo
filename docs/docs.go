@@ -53,7 +53,7 @@ const docTemplate = `{
                                     "type": "object",
                                     "properties": {
                                         "data": {
-                                            "$ref": "#/definitions/geo-service_internal_model.LocationState"
+                                            "$ref": "#/definitions/internal_gps.LocationState"
                                         }
                                     }
                                 }
@@ -95,7 +95,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/geo-service_internal_model.GPSUpdate"
+                            "$ref": "#/definitions/internal_gps.GPSUpdate"
                         }
                     }
                 ],
@@ -111,7 +111,7 @@ const docTemplate = `{
                                     "type": "object",
                                     "properties": {
                                         "data": {
-                                            "$ref": "#/definitions/geo-service_internal_model.LocationState"
+                                            "$ref": "#/definitions/internal_gps.LocationState"
                                         }
                                     }
                                 }
@@ -173,7 +173,7 @@ const docTemplate = `{
         },
         "/route": {
             "post": {
-                "description": "Computes the fastest route between two coordinates using A* search over the OSM road graph, with Yen's k-shortest-paths algorithm for alternative routes. Falls back to Haversine straight-line when the endpoints are outside graph coverage.",
+                "description": "Computes the fastest route between two coordinates. Uses the configured routing backend (OSRM or internal A*), with automatic fallback to the internal engine when the primary backend is unavailable. Falls back to a straight Haversine estimate when endpoints lie outside graph coverage.",
                 "consumes": [
                     "application/json"
                 ],
@@ -191,7 +191,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/geo-service_internal_model.RouteRequest"
+                            "$ref": "#/definitions/internal_route.RouteRequest"
                         }
                     }
                 ],
@@ -207,7 +207,7 @@ const docTemplate = `{
                                     "type": "object",
                                     "properties": {
                                         "data": {
-                                            "$ref": "#/definitions/geo-service_internal_model.RouteResponse"
+                                            "$ref": "#/definitions/internal_route.RouteResponse"
                                         }
                                     }
                                 }
@@ -220,6 +220,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/geo-service_internal_response.Failure"
                         }
                     },
+                    "404": {
+                        "description": "No route found",
+                        "schema": {
+                            "$ref": "#/definitions/geo-service_internal_response.Failure"
+                        }
+                    },
                     "422": {
                         "description": "Validation error (invalid coordinates or transport mode)",
                         "schema": {
@@ -228,6 +234,108 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal routing error",
+                        "schema": {
+                            "$ref": "#/definitions/geo-service_internal_response.Failure"
+                        }
+                    },
+                    "503": {
+                        "description": "Routing backend unavailable or overloaded",
+                        "schema": {
+                            "$ref": "#/definitions/geo-service_internal_response.Failure"
+                        }
+                    },
+                    "504": {
+                        "description": "Routing backend timeout",
+                        "schema": {
+                            "$ref": "#/definitions/geo-service_internal_response.Failure"
+                        }
+                    }
+                }
+            }
+        },
+        "/route/waypoints": {
+            "post": {
+                "description": "Accepts a waypoint list (≥ 2) and a transport mode.\nKeeps the first waypoint as the start, then reorders the rest\nby nearest-neighbor (Haversine distance) before routing each\nconsecutive pair concurrently and stitching the polylines.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "routing"
+                ],
+                "summary": "Calculate a multi-stop route",
+                "parameters": [
+                    {
+                        "description": "Waypoints + mode",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_route.MultiRouteRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/geo-service_internal_response.Success"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/internal_route.MultiRouteResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/geo-service_internal_response.Failure"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/geo-service_internal_response.Failure"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/geo-service_internal_response.Failure"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/geo-service_internal_response.Failure"
+                        }
+                    }
+                }
+            }
+        },
+        "/ws/shipments/nearby": {
+            "get": {
+                "description": "Receives lat/lng over WebSocket. type=passenger queries the Laravel shipment table; type=sender searches nearby passengers in Redis.",
+                "tags": [
+                    "websocket"
+                ],
+                "summary": "WebSocket - nearby shipments",
+                "responses": {
+                    "101": {
+                        "description": "Switching Protocols - WebSocket upgrade successful"
+                    },
+                    "503": {
+                        "description": "Shipment database is not configured",
                         "schema": {
                             "$ref": "#/definitions/geo-service_internal_response.Failure"
                         }
@@ -266,7 +374,38 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "geo-service_internal_model.GPSUpdate": {
+        "geo-service_internal_response.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "geo-service_internal_response.Failure": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/geo-service_internal_response.ErrorDetail"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "geo-service_internal_response.Success": {
+            "type": "object",
+            "properties": {
+                "data": {},
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "internal_gps.GPSUpdate": {
             "type": "object",
             "properties": {
                 "lat": {
@@ -284,7 +423,7 @@ const docTemplate = `{
                 }
             }
         },
-        "geo-service_internal_model.LocationState": {
+        "internal_gps.LocationState": {
             "type": "object",
             "properties": {
                 "deviation_km": {
@@ -308,7 +447,118 @@ const docTemplate = `{
                 }
             }
         },
-        "geo-service_internal_model.RouteOption": {
+        "internal_route.MultiRouteLeg": {
+            "type": "object",
+            "properties": {
+                "distance_km": {
+                    "type": "number"
+                },
+                "duration_min": {
+                    "type": "number"
+                },
+                "from": {
+                    "$ref": "#/definitions/internal_route.Waypoint"
+                },
+                "to": {
+                    "$ref": "#/definitions/internal_route.Waypoint"
+                }
+            }
+        },
+        "internal_route.MultiRouteRequest": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string"
+                },
+                "trip_id": {
+                    "type": "integer"
+                },
+                "waypoints": {
+                    "description": "at least 2; first is the start",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_route.Waypoint"
+                    }
+                }
+            }
+        },
+        "internal_route.MultiRouteResponse": {
+            "type": "object",
+            "properties": {
+                "legs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_route.MultiRouteLeg"
+                    }
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "polyline": {
+                    "description": "combined path",
+                    "type": "string"
+                },
+                "total_distance_km": {
+                    "type": "number"
+                },
+                "total_duration_min": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_route.RouteInstruction": {
+            "type": "object",
+            "properties": {
+                "distance_km": {
+                    "type": "number"
+                },
+                "duration_min": {
+                    "type": "number"
+                },
+                "index": {
+                    "type": "integer"
+                },
+                "location": {
+                    "$ref": "#/definitions/internal_route.RoutePoint"
+                },
+                "modifier": {
+                    "type": "string"
+                },
+                "street_name": {
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_route.RouteLeg": {
+            "type": "object",
+            "properties": {
+                "distance_km": {
+                    "type": "number"
+                },
+                "duration_min": {
+                    "type": "number"
+                },
+                "instructions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_route.RouteInstruction"
+                    }
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "polyline": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_route.RouteOption": {
             "type": "object",
             "properties": {
                 "distance_km": {
@@ -319,6 +569,12 @@ const docTemplate = `{
                 },
                 "id": {
                     "type": "integer"
+                },
+                "instructions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_route.RouteInstruction"
+                    }
                 },
                 "is_primary": {
                     "type": "boolean"
@@ -331,7 +587,18 @@ const docTemplate = `{
                 }
             }
         },
-        "geo-service_internal_model.RouteRequest": {
+        "internal_route.RoutePoint": {
+            "type": "object",
+            "properties": {
+                "lat": {
+                    "type": "number"
+                },
+                "lng": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_route.RouteRequest": {
             "type": "object",
             "properties": {
                 "alternatives": {
@@ -364,7 +631,7 @@ const docTemplate = `{
                 }
             }
         },
-        "geo-service_internal_model.RouteResponse": {
+        "internal_route.RouteResponse": {
             "type": "object",
             "properties": {
                 "distance": {
@@ -375,52 +642,37 @@ const docTemplate = `{
                     "description": "minutes",
                     "type": "number"
                 },
+                "legs": {
+                    "description": "Legs is populated for multi-modal routes (e.g. train mode).\nEach leg has its own mode, polyline, and instructions.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_route.RouteLeg"
+                    }
+                },
                 "mode": {
                     "type": "string"
                 },
                 "polyline": {
-                    "description": "Google Encoded Polyline",
+                    "description": "Google Encoded Polyline (combined for multi-modal)",
                     "type": "string"
                 },
                 "primary": {
-                    "$ref": "#/definitions/geo-service_internal_model.RouteOption"
-                },
-                "routes": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/geo-service_internal_model.RouteOption"
-                    }
+                    "$ref": "#/definitions/internal_route.RouteOption"
                 }
             }
         },
-        "geo-service_internal_response.ErrorDetail": {
+        "internal_route.Waypoint": {
             "type": "object",
             "properties": {
-                "code": {
+                "label": {
+                    "description": "optional human-readable name",
                     "type": "string"
                 },
-                "message": {
-                    "type": "string"
-                }
-            }
-        },
-        "geo-service_internal_response.Failure": {
-            "type": "object",
-            "properties": {
-                "error": {
-                    "$ref": "#/definitions/geo-service_internal_response.ErrorDetail"
+                "lat": {
+                    "type": "number"
                 },
-                "success": {
-                    "type": "boolean"
-                }
-            }
-        },
-        "geo-service_internal_response.Success": {
-            "type": "object",
-            "properties": {
-                "data": {},
-                "success": {
-                    "type": "boolean"
+                "lng": {
+                    "type": "number"
                 }
             }
         }
@@ -434,7 +686,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/",
 	Schemes:          []string{"http", "https"},
 	Title:            "geo-service",
-	Description:      "A production-ready geospatial routing microservice with a custom A* + Yen's k-shortest-paths algorithm, live GPS tracking, WebSocket event delivery, and a PostGIS-backed OSM road graph.",
+	Description:      "A production-ready geospatial routing microservice. Supports self-hosted OSRM (default) with an automatic in-process A* + Yen's k-shortest-paths fallback, live GPS tracking, WebSocket event delivery, and a PostGIS-backed OSM road graph.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

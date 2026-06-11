@@ -23,6 +23,11 @@ type Config struct {
 	CORSAllowedOrigins []string // CORS_ALLOWED_ORIGINS, comma-separated; default ["*"]
 	APIKeyEnabled      bool     // API_KEY_ENABLED; when true X-API-Key header is required
 	APIKey             string   // API_KEY; the expected key value
+	JWTAuthEnabled     bool     // JWT_AUTH_ENABLED; when true Authorization: Bearer JWT is accepted
+	JWTSecret          string   // JWT_SECRET; must match Laravel tymon/jwt-auth secret for HS* algorithms
+	JWTAlgorithm       string   // JWT_ALGO; HS256, HS384, or HS512
+	RateLimitPerMin    int      // RATE_LIMIT_PER_MINUTE; per-IP HTTP request cap
+	RequestBodyLimit   int64    // REQUEST_BODY_LIMIT_BYTES; max accepted request body size
 
 	// ---- routing backend ----
 	RoutingBackend         string // ROUTING_BACKEND: "internal" (default) | "osrm"
@@ -40,13 +45,30 @@ type Config struct {
 	InternalGraphLazyLoad bool // INTERNAL_GRAPH_LAZY_LOAD: load internal road graph on first direct internal use
 	InternalGraphRequired bool // INTERNAL_GRAPH_REQUIRED: fail startup when a required startup graph load fails
 
-	ShipmentDBDriver        string  // SHIPMENT_DB_DRIVER; mysql or postgres/pgx
-	ShipmentDBDSN           string  // SHIPMENT_DB_DSN; direct read-only connection to Laravel DB
-	ShipmentTable           string  // SHIPMENT_TABLE; default shipment
-	ShipmentOriginLatColumn string  // SHIPMENT_ORIGIN_LAT_COLUMN; default origin_lat
-	ShipmentOriginLngColumn string  // SHIPMENT_ORIGIN_LNG_COLUMN; default origin_lng
-	ShipmentSearchRadiusKm  float64 // SHIPMENT_SEARCH_RADIUS_KM; default 10
-	ShipmentSearchLimit     int     // SHIPMENT_SEARCH_LIMIT; default 100
+	ShipmentDBDriver             string  // SHIPMENT_DB_DRIVER; mysql or postgres/pgx
+	ShipmentDBDSN                string  // SHIPMENT_DB_DSN; direct read-only connection to Laravel DB
+	ShipmentTable                string  // SHIPMENT_TABLE; default shipments
+	ShipmentOriginLocationColumn string  // SHIPMENT_ORIGIN_LOCATION_COLUMN; PostGIS geometry column for origin (e.g. start_location)
+	ShipmentEndLocationColumn    string  // SHIPMENT_END_LOCATION_COLUMN; PostGIS geometry column for destination (e.g. end_location)
+	ShipmentSearchRadiusKm       float64 // SHIPMENT_SEARCH_RADIUS_KM; default 2
+	ShipmentSearchLimit          int     // SHIPMENT_SEARCH_LIMIT; default 100
+	ShipmentWeightColumn         string  // SHIPMENT_WEIGHT_COLUMN; legacy weight column retained for compatibility
+
+	// Vehicle lookup settings.
+	// VehicleTypesTable / VehicleTypeLabelColumn / VehicleTypeTitleColumn drive the vehicles array.
+	// The vehicle_box_sizes settings remain for legacy compatibility only.
+	VehicleBoxSizesTable   string // VEHICLE_BOX_SIZES_TABLE; default "vehicle_box_sizes"
+	VehicleIDColumn        string // VEHICLE_ID_COLUMN; FK column in vehicle_box_sizes; default "vehicle_id"
+	VehicleWeightColumn    string // VEHICLE_WEIGHT_COLUMN; max_weight column; default "max_weight"
+	VehicleTypesTable      string // VEHICLE_TYPES_TABLE; joined for label; default "vehicle_types"
+	VehicleTypeLabelColumn string // VEHICLE_TYPE_LABEL_COLUMN; label column in vehicle_types; default "label"
+	VehicleTypeTitleColumn string // VEHICLE_TYPE_TITLE_COLUMN; title column in vehicle_types; default "title"
+
+	// Content types (optional) — joins content_types on content_type_id to add
+	// content_image to each shipment result. Set CONTENT_TYPES_TABLE to enable.
+	ContentTypesTable      string // CONTENT_TYPES_TABLE; e.g. "content_types"; default "" (disabled)
+	ContentTypeIDColumn    string // CONTENT_TYPE_ID_COLUMN; FK in shipments; default "content_type_id"
+	ContentTypeImageColumn string // CONTENT_TYPE_IMAGE_COLUMN; image column in content_types; default "image"
 
 	DriverGeoKey            string  // DRIVER_GEO_KEY; Redis GEO key for live driver locations
 	DriverLocationStreamKey string  // DRIVER_LOCATION_STREAM_KEY; Redis stream for async persistence
@@ -75,14 +97,31 @@ func Load() *Config {
 		CORSAllowedOrigins: corsOrigins,
 		APIKeyEnabled:      getEnvBool("API_KEY_ENABLED", false),
 		APIKey:             getEnv("API_KEY", ""),
+		JWTAuthEnabled:     getEnvBool("JWT_AUTH_ENABLED", true),
+		JWTSecret:          getEnv("JWT_SECRET", ""),
+		JWTAlgorithm:       getEnv("JWT_ALGO", "HS256"),
+		RateLimitPerMin:    getEnvInt("RATE_LIMIT_PER_MINUTE", 300),
+		RequestBodyLimit:   getEnvInt64("REQUEST_BODY_LIMIT_BYTES", 1<<20),
 
-		ShipmentDBDriver:        getEnv("SHIPMENT_DB_DRIVER", "mysql"),
-		ShipmentDBDSN:           getEnv("SHIPMENT_DB_DSN", ""),
-		ShipmentTable:           getEnv("SHIPMENT_TABLE", "shipment"),
-		ShipmentOriginLatColumn: getEnv("SHIPMENT_ORIGIN_LAT_COLUMN", "origin_lat"),
-		ShipmentOriginLngColumn: getEnv("SHIPMENT_ORIGIN_LNG_COLUMN", "origin_lng"),
-		ShipmentSearchRadiusKm:  getEnvFloat("SHIPMENT_SEARCH_RADIUS_KM", 10),
-		ShipmentSearchLimit:     getEnvInt("SHIPMENT_SEARCH_LIMIT", 100),
+		ShipmentDBDriver:             getEnv("SHIPMENT_DB_DRIVER", "mysql"),
+		ShipmentDBDSN:                getEnv("SHIPMENT_DB_DSN", ""),
+		ShipmentTable:                getEnv("SHIPMENT_TABLE", "shipments"),
+		ShipmentOriginLocationColumn: getEnv("SHIPMENT_ORIGIN_LOCATION_COLUMN", "start_location"),
+		ShipmentEndLocationColumn:    getEnv("SHIPMENT_END_LOCATION_COLUMN", "end_location"),
+		ShipmentSearchRadiusKm:       getEnvFloat("SHIPMENT_SEARCH_RADIUS_KM", 2),
+		ShipmentSearchLimit:          getEnvInt("SHIPMENT_SEARCH_LIMIT", 100),
+		ShipmentWeightColumn:         getEnv("SHIPMENT_WEIGHT_COLUMN", "package_length"),
+
+		VehicleBoxSizesTable:   getEnv("VEHICLE_BOX_SIZES_TABLE", "vehicle_box_sizes"),
+		VehicleIDColumn:        getEnv("VEHICLE_ID_COLUMN", "vehicle_id"),
+		VehicleWeightColumn:    getEnv("VEHICLE_WEIGHT_COLUMN", "standard_length"),
+		VehicleTypesTable:      getEnv("VEHICLE_TYPES_TABLE", "vehicle_types"),
+		VehicleTypeLabelColumn: getEnv("VEHICLE_TYPE_LABEL_COLUMN", "label"),
+		VehicleTypeTitleColumn: getEnv("VEHICLE_TYPE_TITLE_COLUMN", "title"),
+
+		ContentTypesTable:      getEnv("CONTENT_TYPES_TABLE", ""),
+		ContentTypeIDColumn:    getEnv("CONTENT_TYPE_ID_COLUMN", "content_type_id"),
+		ContentTypeImageColumn: getEnv("CONTENT_TYPE_IMAGE_COLUMN", "image"),
 
 		DriverGeoKey:            getEnv("DRIVER_GEO_KEY", "drivers:geo"),
 		DriverLocationStreamKey: getEnv("DRIVER_LOCATION_STREAM_KEY", "driver:locations:stream"),

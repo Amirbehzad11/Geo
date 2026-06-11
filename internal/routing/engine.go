@@ -90,17 +90,27 @@ func NormalizeMode(raw string) (TransportMode, error) {
 }
 
 // Calculate returns the primary route between two points for the given mode.
+// Returns nil when the graph is loaded but neither snap radius found a routable
+// node — callers should treat nil as "no route available".
+// When no graph is loaded at all, a Haversine straight-line route is returned.
 func (e *Engine) Calculate(startLat, startLng, endLat, endLng float64, mode TransportMode) *Route {
 	routes := e.CalculateAlternatives(startLat, startLng, endLat, endLng, mode, 1)
 	if len(routes) == 0 {
+		if e.graph != nil {
+			// Graph is present but no routable path found — avoid a straight line.
+			return nil
+		}
 		return e.haversineRoute(startLat, startLng, endLat, endLng, ModeCar)
 	}
 	return routes[0]
 }
 
 // CalculateAlternatives returns up to k candidate routes sorted by duration.
-// When the graph is unavailable or endpoints cannot be snapped, it returns a
-// single Haversine fallback route.
+// When the graph is loaded but neither snap radius (0.3 km primary, 2 km
+// fallback) can find a routable node, it returns nil so callers can report
+// ErrRouteNotFound instead of a straight-line polyline.
+// When no graph is loaded at all, a single Haversine straight-line route is
+// returned as the only available option.
 // Uses context.Background() — for timeout control use CalculateAlternativesCtx.
 func (e *Engine) CalculateAlternatives(startLat, startLng, endLat, endLng float64, mode TransportMode, k int) []*Route {
 	return e.CalculateAlternativesCtx(context.Background(), startLat, startLng, endLat, endLng, mode, k)
@@ -122,19 +132,33 @@ func (e *Engine) CalculateAlternativesCtx(ctx context.Context, startLat, startLn
 	}
 
 	if e.graph != nil {
-		if routes := e.graphRoutesCtx(ctx, startLat, startLng, endLat, endLng, mode, k); len(routes) > 0 {
-			return routes
-		}
+		routes := e.graphRoutesCtx(ctx, startLat, startLng, endLat, endLng, mode, k)
 		if ctx.Err() != nil {
+			// Context cancelled or timed out — do not manufacture a fallback.
 			return nil
 		}
+		if len(routes) > 0 {
+			return routes
+		}
+		// Graph is loaded but neither the primary (0.3 km) nor the fallback
+		// (2 km) snap found a routable node.  Return nil so the service layer
+		// reports ErrRouteNotFound instead of a misleading straight-line polyline.
+		return nil
 	}
+
+	// No road graph at all: Haversine straight-line is the only option.
 	return []*Route{e.haversineRoute(startLat, startLng, endLat, endLng, mode)}
 }
 
 func (e *Engine) HasGraph() bool { return e.graph != nil }
 
+// snapThresholdKm is the primary snap radius: precise for urban areas.
 const snapThresholdKm = 0.3
+
+// snapFallbackKm is the wider snap radius used when the primary snap fails.
+// Rural and mountainous areas (e.g. Mazandaran) have sparse road nodes; a 2 km
+// search ensures we can still snap to the nearest highway/trunk road.
+const snapFallbackKm = 2.0
 
 // longRouteAltsThresholdKm is the straight-line distance above which the
 // engine automatically reduces alternatives to 1. On the Iran graph a 300 km
@@ -361,7 +385,13 @@ func (e *Engine) graphRoutesCtx(ctx context.Context, startLat, startLng, endLat,
 	}
 
 	startNode := e.graph.NearestRoutableNodeWithin(startLat, startLng, snapThresholdKm, p.edgeAllowed)
+	if startNode == nil {
+		startNode = e.graph.NearestRoutableNodeWithin(startLat, startLng, snapFallbackKm, p.edgeAllowed)
+	}
 	endNode := e.graph.NearestRoutableNodeWithin(endLat, endLng, snapThresholdKm, p.edgeAllowed)
+	if endNode == nil {
+		endNode = e.graph.NearestRoutableNodeWithin(endLat, endLng, snapFallbackKm, p.edgeAllowed)
+	}
 	if startNode == nil || endNode == nil {
 		return nil
 	}

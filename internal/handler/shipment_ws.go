@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,9 +52,12 @@ func (h *ShipmentWSHandler) HandleNearby(c *gin.Context) {
 		return
 	}
 	defer conn.Close()
+	conn.SetReadLimit(webSocketReadLimitBytes)
 
 	middleware.WSConnections.Inc()
 	defer middleware.WSConnections.Dec()
+
+	messageLimiter := newWSMessageLimiter(webSocketMessageLimit, webSocketMessageWindow)
 
 	if err := conn.WriteJSON(map[string]any{
 		"type":    "connected",
@@ -79,6 +83,12 @@ func (h *ShipmentWSHandler) HandleNearby(c *gin.Context) {
 		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
 			continue
 		}
+		if !messageLimiter.Allow() {
+			if !writeShipmentWSError(conn, "RATE_LIMITED", "too many messages; please retry later") {
+				return
+			}
+			continue
+		}
 		if err := json.Unmarshal(message, &req); err != nil {
 			if !writeShipmentWSError(conn, "INVALID_JSON", "message must be valid JSON") {
 				return
@@ -89,6 +99,27 @@ func (h *ShipmentWSHandler) HandleNearby(c *gin.Context) {
 			return
 		}
 	}
+}
+
+type wsMessageLimiter struct {
+	limit       int
+	window      time.Duration
+	windowStart time.Time
+	count       int
+}
+
+func newWSMessageLimiter(limit int, window time.Duration) *wsMessageLimiter {
+	return &wsMessageLimiter{limit: limit, window: window, windowStart: time.Now()}
+}
+
+func (l *wsMessageLimiter) Allow() bool {
+	now := time.Now()
+	if now.Sub(l.windowStart) >= l.window {
+		l.windowStart = now
+		l.count = 0
+	}
+	l.count++
+	return l.count <= l.limit
 }
 
 func (h *ShipmentWSHandler) process(conn *websocket.Conn, parent context.Context, req model.NearbyShipmentRequest) bool {
@@ -114,7 +145,8 @@ func (h *ShipmentWSHandler) process(conn *websocket.Conn, parent context.Context
 			if errors.Is(err, service.ErrDriverLocationDisabled) {
 				return writeShipmentWSError(conn, "DRIVER_LOCATION_DISABLED", err.Error())
 			}
-			return writeShipmentWSError(conn, "DRIVER_SEARCH_FAILED", err.Error())
+			slog.Warn("nearby driver search failed", "err", err)
+			return writeShipmentWSError(conn, "DRIVER_SEARCH_FAILED", "driver search failed")
 		}
 		return conn.WriteJSON(result) == nil
 	}
@@ -130,7 +162,8 @@ func (h *ShipmentWSHandler) process(conn *websocket.Conn, parent context.Context
 		if errors.Is(err, service.ErrShipmentSearchDisabled) {
 			return writeShipmentWSError(conn, "SHIPMENT_SEARCH_DISABLED", err.Error())
 		}
-		return writeShipmentWSError(conn, "SHIPMENT_SEARCH_FAILED", err.Error())
+		slog.Warn("nearby shipment search failed", "err", err)
+		return writeShipmentWSError(conn, "SHIPMENT_SEARCH_FAILED", "shipment search failed")
 	}
 	return conn.WriteJSON(result) == nil
 }
