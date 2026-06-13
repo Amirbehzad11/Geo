@@ -263,6 +263,10 @@ func connectShipmentDBWithRetry(ctx context.Context, cfg *config.Config, retryWi
 		ContentTypesTable:      cfg.ContentTypesTable,
 		ContentTypeIDColumn:    cfg.ContentTypeIDColumn,
 		ContentTypeImageColumn: cfg.ContentTypeImageColumn,
+
+		ShipmentImagesTable:           cfg.ShipmentImagesTable,
+		ShipmentImageShipmentIDColumn: cfg.ShipmentImageShipmentIDColumn,
+		ShipmentImageColumn:           cfg.ShipmentImageColumn,
 	}
 
 	deadline := time.Now().Add(retryWindow)

@@ -169,6 +169,11 @@ services:
       CONTENT_TYPE_ID_COLUMN:      "content_type_id"
       CONTENT_TYPE_IMAGE_COLUMN:   "image"
 
+      # Shipment package images — adds images[] to nearby shipment responses
+      SHIPMENT_IMAGES_TABLE:              "shipment_images"
+      SHIPMENT_IMAGE_SHIPMENT_ID_COLUMN:  "shipment_id"
+      SHIPMENT_IMAGE_COLUMN:              "image"
+
       # Driver location search
       DRIVER_GEO_KEY:              "drivers:geo"
       DRIVER_LOCATION_STREAM_KEY:  "driver:locations:stream"

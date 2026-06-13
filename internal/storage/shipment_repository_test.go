@@ -83,6 +83,29 @@ func TestShipmentNearbyQueryPostGISWithEndLocation(t *testing.T) {
 	}
 }
 
+func TestShipmentNearbyQueryPostGISWithImages(t *testing.T) {
+	db := &ShipmentDB{
+		dialect:              "postgres",
+		table:                `"shipments"`,
+		idColumn:             `"id"`,
+		vehicleAllowedCol:    `"vehicle_allowed"`,
+		locationColumn:       `"start_location"`,
+		shipmentImagesSelect: buildShipmentImagesSelect("postgres", `"shipment_images"`, `"shipment_id"`, `"image"`, `"id"`, `"id"`),
+	}
+
+	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50)
+
+	if !strings.Contains(query, `AS images`) {
+		t.Fatalf("expected images alias in query, got:\n%s", query)
+	}
+	if !strings.Contains(query, `FROM "shipment_images" AS si WHERE si."shipment_id" = s."id"`) {
+		t.Fatalf("expected shipment_images correlated subquery, got:\n%s", query)
+	}
+	if strings.Contains(query, `SELECT s.*`) {
+		t.Fatalf("nearby shipment query must not expose full shipment rows, got:\n%s", query)
+	}
+}
+
 // TestShipmentNearbyQueryMySQL verifies the legacy Haversine query still
 // works correctly for MySQL (separate float lat/lng columns).
 func TestShipmentNearbyQueryMySQL(t *testing.T) {

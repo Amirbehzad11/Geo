@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -58,6 +59,11 @@ type ShipmentDBConfig struct {
 	ContentTypesTable      string // e.g. "content_types"; empty = disabled
 	ContentTypeIDColumn    string // FK column in shipments; default "content_type_id"
 	ContentTypeImageColumn string // image column in content_types; default "image"
+
+	// Shipment images (optional).
+	ShipmentImagesTable           string // e.g. "shipment_images"; empty = disabled
+	ShipmentImageShipmentIDColumn string // FK column in shipment_images; default "shipment_id"
+	ShipmentImageColumn           string // image path/url column; default "image"
 }
 
 // ShipmentDB is a read-only connection to the Laravel database.
@@ -83,6 +89,9 @@ type ShipmentDB struct {
 	// prebuilt SQL snippets for the content_types LEFT JOIN (empty = disabled)
 	contentJoin        string // e.g. "LEFT JOIN \"content_types\" AS ct ON ct.\"id\" = s.\"content_type_id\""
 	contentImageSelect string // e.g. ",\n    COALESCE(ct.\"image\", '') AS content_image"
+
+	// prebuilt SQL snippet for shipment_images aggregation (empty = disabled)
+	shipmentImagesSelect string // adds images JSON array
 }
 
 // NewShipmentDB opens a direct DB connection for nearby shipment search.
@@ -209,6 +218,40 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		contentImageSelect = fmt.Sprintf(",\n    COALESCE(ct.%s, '') AS content_image", ctImg)
 	}
 
+	// ---- shipment images (optional) ----
+	var shipmentImagesSelect string
+	if strings.TrimSpace(cfg.ShipmentImagesTable) != "" {
+		imgTable, err := quoteQualifiedIdentifier(dialect, cfg.ShipmentImagesTable)
+		if err != nil {
+			return nil, fmt.Errorf("shipment_images table: %w", err)
+		}
+		imgShipmentIDCol := cfg.ShipmentImageShipmentIDColumn
+		if imgShipmentIDCol == "" {
+			imgShipmentIDCol = "shipment_id"
+		}
+		imgShipmentID, err := quoteIdentifier(dialect, imgShipmentIDCol)
+		if err != nil {
+			return nil, fmt.Errorf("shipment_images shipment_id column: %w", err)
+		}
+		imgCol := cfg.ShipmentImageColumn
+		if imgCol == "" {
+			imgCol = "image"
+		}
+		img, err := quoteIdentifier(dialect, imgCol)
+		if err != nil {
+			return nil, fmt.Errorf("shipment_images image column: %w", err)
+		}
+		imgID, err := quoteIdentifier(dialect, "id")
+		if err != nil {
+			return nil, fmt.Errorf("shipment_images id column: %w", err)
+		}
+		shipmentIDCol, err := quoteIdentifier(dialect, "id")
+		if err != nil {
+			return nil, fmt.Errorf("shipment id column: %w", err)
+		}
+		shipmentImagesSelect = buildShipmentImagesSelect(dialect, imgTable, imgShipmentID, img, imgID, shipmentIDCol)
+	}
+
 	db, err := sql.Open(driverName, cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("shipment db: open: %w", err)
@@ -252,6 +295,7 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		vehicleTypeTitleColumn: vehicleTypeTitleColumn,
 		contentJoin:            contentJoin,
 		contentImageSelect:     contentImageSelect,
+		shipmentImagesSelect:   shipmentImagesSelect,
 	}, nil
 }
 
@@ -569,7 +613,7 @@ SELECT s.%[8]s AS id,
     s.%[9]s AS vehicle_allowed,
     ST_Y(%[1]s::geometry)::float8 AS start_lat,
     ST_X(%[1]s::geometry)::float8 AS start_lng%[2]s,
-    ST_Distance(%[1]s::geography, ST_MakePoint($2, $1)::geography) / 1000.0 AS distance_km%[4]s
+    ST_Distance(%[1]s::geography, ST_MakePoint($2, $1)::geography) / 1000.0 AS distance_km%[4]s%[10]s
 FROM %[3]s AS s%[5]s
 WHERE %[1]s IS NOT NULL
   AND %[6]s = %[7]d
@@ -585,6 +629,7 @@ LIMIT $4`,
 		nearbyShipmentStatusID,
 		s.idColumn,
 		s.vehicleAllowedCol,
+		s.shipmentImagesSelect,
 	)
 
 	return query, args
@@ -621,7 +666,7 @@ FROM (
         s.%s AS vehicle_allowed,
         %s AS start_lat,
         %s AS start_lng,
-        %s AS distance_km%s
+        %s AS distance_km%s%s
     FROM %s AS s%s
     WHERE %s IS NOT NULL
       AND %s IS NOT NULL
@@ -638,6 +683,7 @@ LIMIT %s`,
 		lngRef,
 		distanceExpr,
 		s.contentImageSelect, // ",\n    COALESCE(ct.image, '') AS content_image" or ""
+		s.shipmentImagesSelect,
 		s.table,
 		contentJoin, // "\n    LEFT JOIN content_types AS ct ON ..." or ""
 		latRef,
@@ -687,6 +733,26 @@ func coordinateExpression(dialect, columnRef string) string {
 		)
 	}
 	return fmt.Sprintf(`CAST(NULLIF(%s, '') AS DECIMAL(18, 10))`, columnRef)
+}
+
+func buildShipmentImagesSelect(dialect, table, shipmentIDColumn, imageColumn, imageIDColumn, shipmentIDSelectColumn string) string {
+	if dialect == "postgres" {
+		return fmt.Sprintf(
+			`,\n    (SELECT COALESCE(json_agg(si.%[3]s ORDER BY si.%[4]s) FILTER (WHERE si.%[3]s IS NOT NULL), '[]'::json) FROM %[1]s AS si WHERE si.%[2]s = s.%[5]s) AS images`,
+			table,
+			shipmentIDColumn,
+			imageColumn,
+			imageIDColumn,
+			shipmentIDSelectColumn,
+		)
+	}
+	return fmt.Sprintf(
+		`,\n    (SELECT COALESCE(JSON_ARRAYAGG(si.%[3]s), JSON_ARRAY()) FROM %[1]s AS si WHERE si.%[2]s = s.%[4]s) AS images`,
+		table,
+		shipmentIDColumn,
+		imageColumn,
+		shipmentIDSelectColumn,
+	)
 }
 
 // ── placeholder helpers ───────────────────────────────────────────────────────
@@ -747,6 +813,9 @@ func normalizeSQLValue(column string, v any) any {
 	case nil:
 		return nil
 	case []byte:
+		if column == "images" {
+			return normalizeJSONStringArray(string(x))
+		}
 		if column == "distance_km" || column == "start_lat" || column == "start_lng" ||
 			column == "end_lat" || column == "end_lng" || column == "package_weight" {
 			if f, err := strconv.ParseFloat(string(x), 64); err == nil {
@@ -754,11 +823,41 @@ func normalizeSQLValue(column string, v any) any {
 			}
 		}
 		return string(x)
+	case string:
+		if column == "images" {
+			return normalizeJSONStringArray(x)
+		}
+		return x
 	case time.Time:
 		return x.Format(time.RFC3339Nano)
 	default:
 		return x
 	}
+}
+
+func normalizeJSONStringArray(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.EqualFold(raw, "null") {
+		return []string{}
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err == nil {
+		return values
+	}
+	var anyValues []any
+	if err := json.Unmarshal([]byte(raw), &anyValues); err != nil {
+		return []string{}
+	}
+	values = make([]string, 0, len(anyValues))
+	for _, value := range anyValues {
+		if value == nil {
+			continue
+		}
+		if s := strings.TrimSpace(fmt.Sprint(value)); s != "" {
+			values = append(values, s)
+		}
+	}
+	return values
 }
 
 // ── driver / identifier helpers ───────────────────────────────────────────────

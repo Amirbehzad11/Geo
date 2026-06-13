@@ -70,6 +70,11 @@ type Config struct {
 	ContentTypeIDColumn    string // CONTENT_TYPE_ID_COLUMN; FK in shipments; default "content_type_id"
 	ContentTypeImageColumn string // CONTENT_TYPE_IMAGE_COLUMN; image column in content_types; default "image"
 
+	// Shipment images (optional) — adds an images array to nearby shipment rows.
+	ShipmentImagesTable           string // SHIPMENT_IMAGES_TABLE; e.g. "shipment_images"; default "" (disabled)
+	ShipmentImageShipmentIDColumn string // SHIPMENT_IMAGE_SHIPMENT_ID_COLUMN; default "shipment_id"
+	ShipmentImageColumn           string // SHIPMENT_IMAGE_COLUMN; default "image"
+
 	DriverGeoKey            string  // DRIVER_GEO_KEY; Redis GEO key for live driver locations
 	DriverLocationStreamKey string  // DRIVER_LOCATION_STREAM_KEY; Redis stream for async persistence
 	DriverSearchRadiusKm    float64 // DRIVER_SEARCH_RADIUS_KM; default 20
@@ -122,6 +127,10 @@ func Load() *Config {
 		ContentTypesTable:      getEnv("CONTENT_TYPES_TABLE", ""),
 		ContentTypeIDColumn:    getEnv("CONTENT_TYPE_ID_COLUMN", "content_type_id"),
 		ContentTypeImageColumn: getEnv("CONTENT_TYPE_IMAGE_COLUMN", "image"),
+
+		ShipmentImagesTable:           getEnv("SHIPMENT_IMAGES_TABLE", ""),
+		ShipmentImageShipmentIDColumn: getEnv("SHIPMENT_IMAGE_SHIPMENT_ID_COLUMN", "shipment_id"),
+		ShipmentImageColumn:           getEnv("SHIPMENT_IMAGE_COLUMN", "image"),
 
 		DriverGeoKey:            getEnv("DRIVER_GEO_KEY", "drivers:geo"),
 		DriverLocationStreamKey: getEnv("DRIVER_LOCATION_STREAM_KEY", "driver:locations:stream"),
