@@ -28,6 +28,7 @@ func (r *Redis) SetDriverLocation(ctx context.Context, geoKey, streamKey string,
 	})
 	pipe.HSet(ctx, key, map[string]any{
 		"id":           state.ID,
+		"driver_id":    state.ID,
 		"lat":          state.Lat,
 		"lng":          state.Lng,
 		"timestamp_ms": state.TimestampMs,

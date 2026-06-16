@@ -9,9 +9,13 @@ import (
 // args, ST_DWithin filter, ST_Y/ST_X extraction, and LIMIT $4.
 func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	db := &ShipmentDB{
-		dialect:        "postgres",
-		table:          `"public"."shipments"`,
-		locationColumn: `"start_location"`,
+		dialect:           "postgres",
+		table:             `"public"."shipments"`,
+		idColumn:          `"id"`,
+		vehicleAllowedCol: `"vehicle_allowed"`,
+		visibleOnMapCol:   `"visible_on_map"`,
+		shipmentCodeCol:   `"shipment_code"`,
+		locationColumn:    `"start_location"`,
 	}
 
 	query, args := db.buildNearbyQuery(35.7, 51.4, 2, 50)
@@ -39,6 +43,12 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	// Distance column
 	if !strings.Contains(query, `AS distance_km`) {
 		t.Fatalf("expected distance_km alias, got:\n%s", query)
+	}
+	if !strings.Contains(query, `AS visible_on_map`) {
+		t.Fatalf("expected visible_on_map column in PostGIS query, got:\n%s", query)
+	}
+	if !strings.Contains(query, `AS shipment_code`) {
+		t.Fatalf("expected shipment_code column in PostGIS query, got:\n%s", query)
 	}
 	// LIMIT uses positional placeholder
 	if !strings.Contains(query, "LIMIT $4") {
@@ -69,6 +79,10 @@ func TestShipmentNearbyQueryPostGISWithEndLocation(t *testing.T) {
 	db := &ShipmentDB{
 		dialect:           "postgres",
 		table:             `"shipments"`,
+		idColumn:          `"id"`,
+		vehicleAllowedCol: `"vehicle_allowed"`,
+		visibleOnMapCol:   `"visible_on_map"`,
+		shipmentCodeCol:   `"shipment_code"`,
 		locationColumn:    `"start_location"`,
 		endLocationColumn: `"end_location"`,
 	}
@@ -89,6 +103,8 @@ func TestShipmentNearbyQueryPostGISWithImages(t *testing.T) {
 		table:                `"shipments"`,
 		idColumn:             `"id"`,
 		vehicleAllowedCol:    `"vehicle_allowed"`,
+		visibleOnMapCol:      `"visible_on_map"`,
+		shipmentCodeCol:        `"shipment_code"`,
 		locationColumn:       `"start_location"`,
 		shipmentImagesSelect: buildShipmentImagesSelect("postgres", `"shipment_images"`, `"shipment_id"`, `"image"`, `"id"`, `"id"`),
 	}
@@ -110,10 +126,14 @@ func TestShipmentNearbyQueryPostGISWithImages(t *testing.T) {
 // works correctly for MySQL (separate float lat/lng columns).
 func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	db := &ShipmentDB{
-		dialect:   "mysql",
-		table:     "`shipment`",
-		latColumn: "`origin_lat`",
-		lngColumn: "`origin_lng`",
+		dialect:         "mysql",
+		table:           "`shipment`",
+		idColumn:        "`id`",
+		vehicleAllowedCol: "`vehicle_allowed`",
+		visibleOnMapCol:   "`visible_on_map`",
+		shipmentCodeCol:   "`shipment_code`",
+		latColumn:       "`origin_lat`",
+		lngColumn:       "`origin_lng`",
 	}
 
 	query, args := db.buildNearbyQuery(35.7, 51.4, 10, 25)
@@ -126,6 +146,12 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	}
 	if !strings.Contains(query, "AND s.`last_status_id` = 4") {
 		t.Fatalf("expected last_status_id filter in MySQL query, got:\n%s", query)
+	}
+	if !strings.Contains(query, "AS visible_on_map") {
+		t.Fatalf("expected visible_on_map column in MySQL query, got:\n%s", query)
+	}
+	if !strings.Contains(query, "AS shipment_code") {
+		t.Fatalf("expected shipment_code column in MySQL query, got:\n%s", query)
 	}
 	if len(args) != 9 {
 		t.Fatalf("expected 9 args, got %d", len(args))
@@ -142,6 +168,16 @@ func TestShipmentIdentifierValidation(t *testing.T) {
 	}
 	if got, err := quoteQualifiedIdentifier("postgres", "public.shipments"); err != nil || got != `"public"."shipments"` {
 		t.Fatalf("unexpected qualified identifier result got=%q err=%v", got, err)
+	}
+}
+
+func TestValidateShipmentDriverDSN(t *testing.T) {
+	pgDSN := "host=localhost port=5432 user=u password=p dbname=mr_chamedon sslmode=disable"
+	if err := validateShipmentDriverDSN("mysql", pgDSN); err == nil {
+		t.Fatal("expected mysql driver with postgres DSN to be rejected")
+	}
+	if err := validateShipmentDriverDSN("postgres", pgDSN); err != nil {
+		t.Fatalf("expected postgres driver with postgres DSN to pass, got %v", err)
 	}
 }
 

@@ -41,6 +41,7 @@ import (
 	"geo-service/internal/service"
 	"geo-service/internal/storage"
 	"geo-service/internal/ws"
+	"geo-service/internal/wsnearby"
 )
 
 const (
@@ -111,7 +112,7 @@ func main() {
 	})
 	multiRouteSvc := routeapi.NewMultiRouteService(routeSvc)
 	gpsSvc := gpsapi.NewGPSService(redisClient, eventBus, cfg.GPSRateLimitMs, cfg.DeviationThreshKm)
-	driverSvc := service.NewDriverService(redisClient, cfg.DriverGeoKey, cfg.DriverLocationStreamKey, cfg.DriverSearchRadiusKm, cfg.ShipmentSearchLimit)
+	driverSvc := service.NewDriverService(redisClient, cfg.DriverGeoKey, cfg.DriverLocationStreamKey, cfg.DriverSearchRadiusKm, cfg.ShipmentSearchLimit, shipmentDB)
 	var shipmentSvc *service.ShipmentService
 	if shipmentDB != nil {
 		shipmentSvc = service.NewShipmentService(shipmentDB, cfg.ShipmentSearchRadiusKm, cfg.ShipmentSearchLimit)
@@ -125,17 +126,23 @@ func main() {
 		routeH = routeapi.NewRouteHandler(routeSvc, shipmentDB)
 		multiRouteH = routeapi.NewMultiRouteHandler(multiRouteSvc, shipmentDB)
 	}
-	gpsH := gpsapi.NewGPSHandler(gpsSvc)
+	gpsRequireAuth := cfg.JWTAuthEnabled || cfg.APIKeyEnabled
+	gpsH := gpsapi.NewGPSHandler(gpsSvc, gpsRequireAuth)
 	if shipmentDB != nil {
-		gpsH = gpsapi.NewGPSHandler(gpsSvc, shipmentDB)
+		gpsH = gpsapi.NewGPSHandler(gpsSvc, gpsRequireAuth, shipmentDB)
 	}
 	driverH := handler.NewDriverHandler(driverSvc)
 	handler.ConfigureWebSocketOrigins(cfg.CORSAllowedOrigins)
-	wsH := handler.NewWSHandler(hub)
+	wsH := handler.NewWSHandler(hub, cfg.WebSocketTripAuthEnabled)
 	if shipmentDB != nil {
-		wsH = handler.NewWSHandler(hub, shipmentDB)
+		wsH = handler.NewWSHandler(hub, cfg.WebSocketTripAuthEnabled, shipmentDB)
 	}
-	shipmentWSH := handler.NewShipmentWSHandler(shipmentSvc, driverSvc)
+	shipmentWSH := handler.NewShipmentWSHandler(shipmentSvc, driverSvc, shipmentWSConfig(cfg), middleware.WSAuthOptions{
+		RequireAuth:  cfg.WSShipmentAuthRequired,
+		APIKey:       cfg.APIKey,
+		JWTSecret:    cfg.JWTSecret,
+		JWTAlgorithm: cfg.JWTAlgorithm,
+	})
 
 	// ---- background workers -----------------------------------------------------
 	workerCtx, workerCancel := context.WithCancel(context.Background())
@@ -444,4 +451,20 @@ func buildRouteBackend(cfg *config.Config, engine *routing.Engine, loader func(c
 		"yen_spur_cap", cfg.RoutingYenSpurCap,
 	)
 	return internalLimited
+}
+
+func shipmentWSConfig(cfg *config.Config) wsnearby.Config {
+	return wsnearby.Config{
+		RequireTLS:      cfg.WSShipmentRequireTLS,
+		RequireAuth:     cfg.WSShipmentAuthRequired,
+		AllowLegacy:     cfg.WSShipmentLegacyFormat,
+		MaxPayloadBytes: cfg.WSShipmentMaxPayloadBytes,
+		MaxGlobalConns:  cfg.WSShipmentMaxConnections,
+		MaxPerIP:        cfg.WSShipmentMaxPerIP,
+		MessagesPerSec:  cfg.WSShipmentMessagesPerSec,
+		MessageBurst:    cfg.WSShipmentMessageBurst,
+		IdleTimeout:     time.Duration(cfg.WSShipmentIdleTimeoutSec) * time.Second,
+		PingInterval:    time.Duration(cfg.WSShipmentPingIntervalSec) * time.Second,
+		QueryTimeout:    10 * time.Second,
+	}
 }

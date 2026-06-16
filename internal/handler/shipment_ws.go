@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -17,28 +16,43 @@ import (
 	"geo-service/internal/model"
 	"geo-service/internal/response"
 	"geo-service/internal/service"
-	"geo-service/internal/utils"
+	"geo-service/internal/wsnearby"
 )
 
-const shipmentQueryTimeout = 10 * time.Second
-
-// ShipmentWSHandler handles nearby lookups over WebSocket.
+// ShipmentWSHandler handles secure nearby lookups over WebSocket.
 type ShipmentWSHandler struct {
 	svc       *service.ShipmentService
 	driverSvc *service.DriverService
+	cfg       wsnearby.Config
+	auth      middleware.WSAuthOptions
+	limiter   *wsnearby.ConnLimiter
 }
 
 // NewShipmentWSHandler creates a WebSocket handler for shipment lookup.
-func NewShipmentWSHandler(svc *service.ShipmentService, driverSvc *service.DriverService) *ShipmentWSHandler {
-	return &ShipmentWSHandler{svc: svc, driverSvc: driverSvc}
+func NewShipmentWSHandler(
+	svc *service.ShipmentService,
+	driverSvc *service.DriverService,
+	cfg wsnearby.Config,
+	auth middleware.WSAuthOptions,
+) *ShipmentWSHandler {
+	return &ShipmentWSHandler{
+		svc:       svc,
+		driverSvc: driverSvc,
+		cfg:       cfg,
+		auth:      auth,
+		limiter:   wsnearby.NewConnLimiter(cfg.MaxPerIP, cfg.MaxGlobalConns),
+	}
 }
 
 // HandleNearby handles GET /ws/shipments/nearby
 //
-//	@Summary		WebSocket - nearby shipments
-//	@Description	Receives lat/lng over WebSocket. type=passenger queries the Laravel shipment table; type=sender searches nearby passengers in Redis.
+//	@Summary		WebSocket - nearby shipments (secure)
+//	@Description	Structured messages: {"type":"SUBSCRIBE_LOCATION","data":{"lat":..,"lng":..,"role":"passenger"}}. Legacy flat JSON supported when WS_SHIPMENT_LEGACY_FORMAT=true.
 //	@Tags			websocket
 //	@Success		101	"Switching Protocols - WebSocket upgrade successful"
+//	@Failure		401	{object}	response.Failure	"Missing or invalid token"
+//	@Failure		403	{object}	response.Failure	"Origin not allowed or insecure transport"
+//	@Failure		429	{object}	response.Failure	"Too many connections"
 //	@Failure		503	{object}	response.Failure	"Shipment database is not configured"
 //	@Router			/ws/shipments/nearby [get]
 func (h *ShipmentWSHandler) HandleNearby(c *gin.Context) {
@@ -47,125 +61,145 @@ func (h *ShipmentWSHandler) HandleNearby(c *gin.Context) {
 		return
 	}
 
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
+	ip := c.ClientIP()
+	if h.cfg.RequireTLS && !middleware.RequestIsSecure(c.Request) {
+		slog.Warn("ws shipment rejected: insecure transport", "ip", ip)
+		response.Fail(c, http.StatusForbidden, "INSECURE_TRANSPORT", "secure WebSocket (WSS) is required")
 		return
 	}
-	defer conn.Close()
-	conn.SetReadLimit(webSocketReadLimitBytes)
+
+	authResult, ok := middleware.AuthenticateWebSocketUpgrade(c.Request, h.auth)
+	if !ok {
+		slog.Warn("ws shipment auth failed", "ip", ip)
+		response.Fail(c, http.StatusUnauthorized, "UNAUTHORIZED", "valid token is required")
+		return
+	}
+
+	if !h.limiter.Acquire(ip) {
+		slog.Warn("ws shipment connection limit exceeded", "ip", ip)
+		response.Fail(c, http.StatusTooManyRequests, "TOO_MANY_CONNECTIONS", "connection limit exceeded for this client")
+		return
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			h.limiter.Release(ip)
+		}
+	}
+	defer release()
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		slog.Warn("ws shipment upgrade failed", "ip", ip, "err", err)
+		return
+	}
 
 	middleware.WSConnections.Inc()
-	defer middleware.WSConnections.Dec()
+	session := wsnearby.NewSession(conn, h.cfg, ip, authResult.UserID, func() {
+		middleware.WSConnections.Dec()
+		release()
+	})
+	defer session.Close()
+	session.RunPumps()
 
-	messageLimiter := newWSMessageLimiter(webSocketMessageLimit, webSocketMessageWindow)
-
-	if err := conn.WriteJSON(map[string]any{
+	slog.Info("ws shipment connected", "ip", ip, "user_id", authResult.UserID, "auth", authResult.Method)
+	if !session.WriteJSON(map[string]any{
 		"type":    "connected",
 		"channel": "shipment.nearby",
-	}); err != nil {
+		"protocol": map[string]any{
+			"version":  1,
+			"messages": []string{wsnearby.MsgSubscribeLocation, wsnearby.MsgPing},
+		},
+	}) {
 		return
 	}
 
 	if req, ok, err := shipmentRequestFromQuery(c); err != nil {
-		writeShipmentWSError(conn, "VALIDATION_ERROR", err.Error())
+		session.WriteError("VALIDATION_ERROR", err.Error())
 	} else if ok {
-		if !h.process(conn, c.Request.Context(), req) {
-			return
-		}
+		h.process(session, c.Request.Context(), req)
 	}
 
 	for {
-		var req model.NearbyShipmentRequest
-		messageType, message, err := conn.ReadMessage()
+		_, message, err := conn.ReadMessage()
 		if err != nil {
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				slog.Debug("ws shipment read closed", "ip", ip, "err", err)
+			}
 			return
 		}
-		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
-			continue
-		}
-		if !messageLimiter.Allow() {
-			if !writeShipmentWSError(conn, "RATE_LIMITED", "too many messages; please retry later") {
-				return
-			}
-			continue
-		}
-		if err := json.Unmarshal(message, &req); err != nil {
-			if !writeShipmentWSError(conn, "INVALID_JSON", "message must be valid JSON") {
-				return
-			}
-			continue
-		}
-		if !h.process(conn, c.Request.Context(), req) {
+		if int64(len(message)) > h.cfg.MaxPayloadBytes {
+			slog.Warn("ws shipment oversize payload", "ip", ip, "bytes", len(message))
+			session.WriteError("PAYLOAD_TOO_LARGE", "message exceeds maximum size")
 			return
 		}
+		if !session.AllowMessage() {
+			slog.Warn("ws shipment rate limited", "ip", ip)
+			session.WriteError("RATE_LIMITED", "too many messages; connection will close")
+			return
+		}
+
+		msg, req, hasSearch, err := wsnearby.ParseInbound(message, h.cfg.AllowLegacy)
+		if err != nil {
+			session.WriteError("VALIDATION_ERROR", err.Error())
+			continue
+		}
+		switch msg.Type {
+		case wsnearby.MsgPing:
+			session.WritePong()
+		case wsnearby.MsgSubscribeLocation, "LEGACY":
+			if hasSearch {
+				h.process(session, c.Request.Context(), req)
+			}
+		default:
+			session.WriteError("VALIDATION_ERROR", "unsupported message type")
+		}
 	}
 }
 
-type wsMessageLimiter struct {
-	limit       int
-	window      time.Duration
-	windowStart time.Time
-	count       int
-}
-
-func newWSMessageLimiter(limit int, window time.Duration) *wsMessageLimiter {
-	return &wsMessageLimiter{limit: limit, window: window, windowStart: time.Now()}
-}
-
-func (l *wsMessageLimiter) Allow() bool {
-	now := time.Now()
-	if now.Sub(l.windowStart) >= l.window {
-		l.windowStart = now
-		l.count = 0
-	}
-	l.count++
-	return l.count <= l.limit
-}
-
-func (h *ShipmentWSHandler) process(conn *websocket.Conn, parent context.Context, req model.NearbyShipmentRequest) bool {
-	if !utils.ValidCoords(req.Lat, req.Lng) {
-		return writeShipmentWSError(conn, "VALIDATION_ERROR", "coordinates out of valid range (-90 <= lat <= 90, -180 <= lng <= 180)")
-	}
-	if req.RadiusKm < 0 {
-		return writeShipmentWSError(conn, "VALIDATION_ERROR", "radius_km must be positive")
-	}
-	if req.Limit < 0 {
-		return writeShipmentWSError(conn, "VALIDATION_ERROR", "limit must be positive")
-	}
-
-	ctx, cancel := context.WithTimeout(parent, shipmentQueryTimeout)
+func (h *ShipmentWSHandler) process(session *wsnearby.Session, parent context.Context, req model.NearbyShipmentRequest) {
+	ctx, cancel := context.WithTimeout(parent, h.cfg.QueryTimeout)
 	defer cancel()
 
 	if nearbyRequestType(req.Type) == "sender" {
 		if h.driverSvc == nil {
-			return writeShipmentWSError(conn, "DRIVER_LOCATION_DISABLED", service.ErrDriverLocationDisabled.Error())
+			session.WriteError("DRIVER_LOCATION_DISABLED", service.ErrDriverLocationDisabled.Error())
+			return
 		}
 		result, err := h.driverSvc.SearchNearby(ctx, req.Lat, req.Lng, req.RadiusKm, req.Limit)
 		if err != nil {
 			if errors.Is(err, service.ErrDriverLocationDisabled) {
-				return writeShipmentWSError(conn, "DRIVER_LOCATION_DISABLED", err.Error())
+				session.WriteError("DRIVER_LOCATION_DISABLED", err.Error())
+				return
 			}
 			slog.Warn("nearby driver search failed", "err", err)
-			return writeShipmentWSError(conn, "DRIVER_SEARCH_FAILED", "driver search failed")
+			session.WriteError("DRIVER_SEARCH_FAILED", "driver search failed")
+			return
 		}
-		return conn.WriteJSON(result) == nil
+		session.WriteJSON(result)
+		return
 	}
 	if nearbyRequestType(req.Type) == "" {
-		return writeShipmentWSError(conn, "VALIDATION_ERROR", "unsupported nearby request type")
+		session.WriteError("VALIDATION_ERROR", "unsupported nearby request type")
+		return
 	}
 	if h.svc == nil {
-		return writeShipmentWSError(conn, "SHIPMENT_SEARCH_DISABLED", service.ErrShipmentSearchDisabled.Error())
+		session.WriteError("SHIPMENT_SEARCH_DISABLED", service.ErrShipmentSearchDisabled.Error())
+		return
 	}
 
 	result, err := h.svc.SearchNearby(ctx, req)
 	if err != nil {
 		if errors.Is(err, service.ErrShipmentSearchDisabled) {
-			return writeShipmentWSError(conn, "SHIPMENT_SEARCH_DISABLED", err.Error())
+			session.WriteError("SHIPMENT_SEARCH_DISABLED", err.Error())
+			return
 		}
 		slog.Warn("nearby shipment search failed", "err", err)
-		return writeShipmentWSError(conn, "SHIPMENT_SEARCH_FAILED", "shipment search failed")
+		session.WriteError("SHIPMENT_SEARCH_FAILED", "shipment search failed")
+		return
 	}
-	return conn.WriteJSON(result) == nil
+	session.WriteJSON(result)
 }
 
 func shipmentRequestFromQuery(c *gin.Context) (model.NearbyShipmentRequest, bool, error) {
@@ -203,16 +237,15 @@ func shipmentRequestFromQuery(c *gin.Context) (model.NearbyShipmentRequest, bool
 		req.Limit = limit
 	}
 
-	return req, true, nil
-}
-
-func writeShipmentWSError(conn *websocket.Conn, code, message string) bool {
-	return conn.WriteJSON(map[string]any{
-		"type":         "error",
-		"code":         code,
-		"message":      message,
-		"timestamp_ms": time.Now().UnixMilli(),
-	}) == nil
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return model.NearbyShipmentRequest{}, false, err
+	}
+	_, validated, _, err := wsnearby.ParseInbound(payload, true)
+	if err != nil {
+		return model.NearbyShipmentRequest{}, false, err
+	}
+	return validated, true, nil
 }
 
 func nearbyRequestType(raw string) string {

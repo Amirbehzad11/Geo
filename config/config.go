@@ -78,6 +78,21 @@ type Config struct {
 	DriverGeoKey            string  // DRIVER_GEO_KEY; Redis GEO key for live driver locations
 	DriverLocationStreamKey string  // DRIVER_LOCATION_STREAM_KEY; Redis stream for async persistence
 	DriverSearchRadiusKm    float64 // DRIVER_SEARCH_RADIUS_KM; default 20
+
+	// WebSocketTripAuthEnabled gates JWT/API-key + trip ACL on GET /ws/trip/:id.
+	WebSocketTripAuthEnabled bool // WEBSOCKET_AUTH_ENABLED; default false (dev-friendly)
+
+	// Shipment nearby WebSocket security (/ws/shipments/nearby).
+	WSShipmentRequireTLS      bool
+	WSShipmentAuthRequired    bool
+	WSShipmentLegacyFormat    bool
+	WSShipmentMaxPayloadBytes int64
+	WSShipmentMaxConnections  int
+	WSShipmentMaxPerIP        int
+	WSShipmentMessagesPerSec  float64
+	WSShipmentMessageBurst    int
+	WSShipmentIdleTimeoutSec  int64
+	WSShipmentPingIntervalSec int64
 }
 
 func Load() *Config {
@@ -108,7 +123,7 @@ func Load() *Config {
 		RateLimitPerMin:    getEnvInt("RATE_LIMIT_PER_MINUTE", 300),
 		RequestBodyLimit:   getEnvInt64("REQUEST_BODY_LIMIT_BYTES", 1<<20),
 
-		ShipmentDBDriver:             getEnv("SHIPMENT_DB_DRIVER", "mysql"),
+		ShipmentDBDriver:             getEnv("SHIPMENT_DB_DRIVER", "postgres"),
 		ShipmentDBDSN:                getEnv("SHIPMENT_DB_DSN", ""),
 		ShipmentTable:                getEnv("SHIPMENT_TABLE", "shipments"),
 		ShipmentOriginLocationColumn: getEnv("SHIPMENT_ORIGIN_LOCATION_COLUMN", "start_location"),
@@ -135,6 +150,19 @@ func Load() *Config {
 		DriverGeoKey:            getEnv("DRIVER_GEO_KEY", "drivers:geo"),
 		DriverLocationStreamKey: getEnv("DRIVER_LOCATION_STREAM_KEY", "driver:locations:stream"),
 		DriverSearchRadiusKm:    getEnvFloat("DRIVER_SEARCH_RADIUS_KM", 20),
+
+		WebSocketTripAuthEnabled: getEnvBool("WEBSOCKET_AUTH_ENABLED", false),
+
+		WSShipmentRequireTLS:      getEnvBool("WS_SHIPMENT_REQUIRE_TLS", false),
+		WSShipmentAuthRequired:    getEnvBool("WS_SHIPMENT_AUTH_REQUIRED", true),
+		WSShipmentLegacyFormat:    getEnvBool("WS_SHIPMENT_LEGACY_FORMAT", true),
+		WSShipmentMaxPayloadBytes: getEnvInt64("WS_SHIPMENT_MAX_PAYLOAD_BYTES", 4096),
+		WSShipmentMaxConnections:  getEnvInt("WS_SHIPMENT_MAX_CONNECTIONS", 2000),
+		WSShipmentMaxPerIP:        getEnvInt("WS_SHIPMENT_MAX_PER_IP", 10),
+		WSShipmentMessagesPerSec:  getEnvFloat("WS_SHIPMENT_MESSAGES_PER_SEC", 2),
+		WSShipmentMessageBurst:    getEnvInt("WS_SHIPMENT_MESSAGE_BURST", 5),
+		WSShipmentIdleTimeoutSec:  getEnvInt64("WS_SHIPMENT_IDLE_TIMEOUT_SEC", 90),
+		WSShipmentPingIntervalSec: getEnvInt64("WS_SHIPMENT_PING_INTERVAL_SEC", 30),
 
 		RoutingBackend:         getEnv("ROUTING_BACKEND", "internal"),
 		OSRMBaseURL:            getEnv("OSRM_BASE_URL", "http://osrm:5000"),

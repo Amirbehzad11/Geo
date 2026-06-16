@@ -41,11 +41,13 @@ type DriverLocationRequest struct {
 }
 
 type DriverLocation struct {
-	ID          string  `json:"id"`
-	Lat         float64 `json:"lat"`
-	Lng         float64 `json:"lng"`
-	TimestampMs int64   `json:"timestamp_ms"`
-	DistanceKm  float64 `json:"distance_km,omitempty"`
+	ID          string           `json:"id"`
+	DriverID    int64            `json:"driver_id,omitempty"`
+	Lat         float64          `json:"lat"`
+	Lng         float64          `json:"lng"`
+	TimestampMs int64            `json:"timestamp_ms"`
+	DistanceKm  float64          `json:"distance_km,omitempty"`
+	Trips       []map[string]any `json:"trips,omitempty"`
 }
 
 type DriverLocationResponse struct {

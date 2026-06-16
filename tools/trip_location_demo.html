@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ردیابی لایو سفر — trip_id=4</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #111; background: #f4f6f8; }
+    body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    label { display: block; margin-top: .75rem; font-size: .9rem; }
+    input, select, button { width: 100%; padding: .55rem .7rem; margin-top: .25rem; box-sizing: border-box; }
+    button { margin-top: 1rem; cursor: pointer; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+    pre { background: #111; color: #d6ffd6; padding: 1rem; border-radius: 8px; overflow: auto; min-height: 180px; }
+    .status { margin-top: .75rem; font-size: .9rem; }
+    a.map { color: #0b57d0; }
+  </style>
+</head>
+<body>
+  <h1>موقعیت لایو مسافر — trip_id=4</h1>
+  <p>برای دیدن موقعیت: <code>GET /gps/trip/4/location</code> یا WebSocket <code>/ws/trip/4</code></p>
+
+  <label>آدرس geo-service
+    <input id="base" value="http://localhost:8080" />
+  </label>
+  <label>JWT (Bearer) یا API Key
+    <input id="token" placeholder="JWT یا API Key" />
+  </label>
+  <div class="row">
+    <label>حالت
+      <select id="mode">
+        <option value="poll">Polling هر ۳ ثانیه</option>
+        <option value="ws">WebSocket لایو</option>
+      </select>
+    </label>
+    <label>trip_id
+      <input id="tripId" type="number" value="4" />
+    </label>
+  </div>
+  <button id="startBtn">شروع</button>
+  <button id="stopBtn" disabled>توقف</button>
+
+  <div class="status" id="status">آماده</div>
+  <pre id="out">{}</pre>
+
+  <script>
+    let timer = null;
+    let ws = null;
+
+    const $ = (id) => document.getElementById(id);
+    const headers = () => {
+      const token = $('token').value.trim();
+      const h = { 'Content-Type': 'application/json' };
+      if (!token) return h;
+      if (token.includes('.')) h['Authorization'] = 'Bearer ' + token;
+      else h['X-API-Key'] = token;
+      return h;
+    };
+
+    function setStatus(msg) { $('status').textContent = msg; }
+    function show(data) {
+      $('out').textContent = JSON.stringify(data, null, 2);
+      if (data?.data?.lat != null) {
+        const { lat, lng } = data.data;
+        setStatus(`آخرین موقعیت: ${lat}, ${lng} — ` +
+          `<a class="map" target="_blank" href="https://www.google.com/maps?q=${lat},${lng}">نقشه</a>`);
+      }
+    }
+
+    async function pollOnce() {
+      const base = $('base').value.replace(/\/$/, '');
+      const tripId = $('tripId').value;
+      const res = await fetch(`${base}/gps/trip/${tripId}/location`, { headers: headers() });
+      const body = await res.json();
+      show(body);
+      if (!res.ok) setStatus('خطا: ' + (body.message || res.status));
+    }
+
+    function startPoll() {
+      pollOnce();
+      timer = setInterval(pollOnce, 3000);
+    }
+
+    function startWS() {
+      const base = $('base').value.replace(/\/$/, '').replace(/^http/, 'ws');
+      const tripId = $('tripId').value;
+      const protocols = token ? ['bearer', token] : undefined;
+      ws = new WebSocket(`${base}/ws/trip/${tripId}`, protocols);
+      ws.onopen = () => setStatus('WebSocket متصل');
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        $('out').textContent = JSON.stringify(msg, null, 2);
+        const p = msg.payload;
+        if (p?.lat != null) {
+          setStatus(`لایو: ${p.lat}, ${p.lng}`);
+        }
+      };
+      ws.onerror = () => setStatus('خطای WebSocket');
+      ws.onclose = () => setStatus('WebSocket بسته شد');
+    }
+
+    function stop() {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (ws) { ws.close(); ws = null; }
+      $('startBtn').disabled = false;
+      $('stopBtn').disabled = true;
+      setStatus('متوقف شد');
+    }
+
+    $('startBtn').onclick = () => {
+      stop();
+      $('startBtn').disabled = true;
+      $('stopBtn').disabled = false;
+      if ($('mode').value === 'ws') startWS(); else startPoll();
+    };
+    $('stopBtn').onclick = stop;
+  </script>
+</body>
+</html>

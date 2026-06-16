@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,11 @@ const (
 // ShipmentRepository is the read-only storage contract used by ShipmentService.
 type ShipmentRepository interface {
 	FindNearbyShipments(ctx context.Context, lat, lng, radiusKm float64, limit int) ([]map[string]any, error)
+}
+
+// ShippingRepository optionally enriches shipments with active shipping rows.
+type ShippingRepository interface {
+	LoadShippingsByShipmentIDs(ctx context.Context, shipmentIDs []int64) (map[int64]map[string]any, error)
 }
 
 // VehicleTypeRepository optionally enriches shipments with vehicle labels/titles.
@@ -106,6 +112,7 @@ func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShip
 		row["vehicles"] = buildShipmentVehicles(allowedIDs, vehicleTypes)
 		out = append(out, row)
 	}
+	s.attachShippings(ctx, out)
 
 	return &model.NearbyShipmentResponse{
 		Type:      "shipment.nearby",
@@ -119,6 +126,48 @@ func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShip
 		Count:     len(out),
 		Shipments: out,
 	}, nil
+}
+
+func (s *ShipmentService) attachShippings(ctx context.Context, rows []map[string]any) {
+	sr, ok := s.repo.(ShippingRepository)
+	if !ok || len(rows) == 0 {
+		return
+	}
+
+	seen := make(map[int64]struct{}, len(rows))
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		id, ok := toInt64(row["id"])
+		if !ok || id <= 0 {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	byShipment, err := sr.LoadShippingsByShipmentIDs(ctx, ids)
+	if err != nil {
+		slog.Warn("nearby shipment shipping enrichment failed", "err", err)
+		return
+	}
+	for _, row := range rows {
+		id, ok := toInt64(row["id"])
+		if !ok {
+			row["shipping"] = nil
+			continue
+		}
+		if shipping, ok := byShipment[id]; ok {
+			row["shipping"] = shipping
+		} else {
+			row["shipping"] = nil
+		}
+	}
 }
 
 type vehicleTypeInfo struct {

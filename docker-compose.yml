@@ -183,11 +183,15 @@ services:
       # Set this to your Laravel/frontend origin in production, for example:
       # CORS_ALLOWED_ORIGINS: "https://app.example.com"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost:8000,http://localhost:5173}"
-      API_KEY_ENABLED: "false"
-      API_KEY: ""
+      API_KEY_ENABLED: "${API_KEY_ENABLED:-false}"
+      API_KEY: "${API_KEY:-}"
       JWT_AUTH_ENABLED: "${JWT_AUTH_ENABLED:-true}"
       JWT_SECRET: "${JWT_SECRET:-}"
       JWT_ALGO: "${JWT_ALGO:-HS256}"
+      WEBSOCKET_AUTH_ENABLED: "${WEBSOCKET_AUTH_ENABLED:-false}"
+      WS_SHIPMENT_REQUIRE_TLS: "${WS_SHIPMENT_REQUIRE_TLS:-false}"
+      WS_SHIPMENT_AUTH_REQUIRED: "${WS_SHIPMENT_AUTH_REQUIRED:-true}"
+      WS_SHIPMENT_LEGACY_FORMAT: "${WS_SHIPMENT_LEGACY_FORMAT:-true}"
       RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-300}"
       REQUEST_BODY_LIMIT_BYTES: "${REQUEST_BODY_LIMIT_BYTES:-1048576}"
     depends_on:
@@ -195,6 +199,70 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+
+  # Continuous driver location simulator — updates existing Redis GEO members.
+  # Enable with: docker compose --profile sim up -d
+  sim-drivers:
+    build:
+      context: .
+      dockerfile: Dockerfile.sim-drivers
+    restart: unless-stopped
+    mem_limit: 64m
+    networks:
+      - geo_net
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: redis:6379
+      DRIVER_GEO_KEY: drivers:geo
+      SIM_DRIVER_COUNT: "1"
+      SIM_DRIVER_ID_START: "16"
+      SIM_DRIVER_CITY: isfahan
+      SIM_DRIVER_WORKERS: "4"
+    command:
+      - -redis=redis:6379
+      - -city=isfahan
+      - -count=1
+      - -id-start=16
+      - -workers=4
+      - -tick=5s
+      - -batch-size=100
+      - -min-move-m=10
+      - -active-ratio=0.1
+      - -keepalive-sec=90
+      - -reset-geo
+    profiles:
+      - sim
+
+  # Simulates passenger GPS along a fixed route and posts to /gps/update.
+  # Requires API_KEY_ENABLED=true (or JWT for trip owner) on geo-service.
+  # Enable with: docker compose --profile sim up -d --build sim-passenger
+  sim-passenger:
+    build:
+      context: .
+      dockerfile: Dockerfile.sim-passenger
+    restart: unless-stopped
+    mem_limit: 32m
+    networks:
+      - geo_net
+    depends_on:
+      - geo-service
+    command:
+      - -base=http://geo-service:8080
+      - -trip=4
+      - -speed-kmh=45
+      - -tick=4s
+      - -pause=3s
+      - -start-lat=32.673130
+      - -start-lng=51.633027
+      - -pickup-lat=32.562882
+      - -pickup-lng=51.753255
+      - -dest-lat=32.796752
+      - -dest-lng=51.749825
+      - -loop
+    profiles:
+      - sim
 
 networks:
   geo_net:

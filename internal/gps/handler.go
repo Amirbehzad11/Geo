@@ -14,13 +14,14 @@ import (
 
 // GPSHandler exposes the live GPS update endpoints.
 type GPSHandler struct {
-	svc   *GPSService
-	authz TripAuthorizer
+	svc         *GPSService
+	authz       TripAuthorizer
+	requireAuth bool
 }
 
 // NewGPSHandler creates a GPSHandler backed by the given service.
-func NewGPSHandler(svc *GPSService, authorizers ...TripAuthorizer) *GPSHandler {
-	h := &GPSHandler{svc: svc}
+func NewGPSHandler(svc *GPSService, requireAuth bool, authorizers ...TripAuthorizer) *GPSHandler {
+	h := &GPSHandler{svc: svc, requireAuth: requireAuth}
 	if len(authorizers) > 0 {
 		h.authz = authorizers[0]
 	}
@@ -113,6 +114,9 @@ func (h *GPSHandler) GetLocation(c *gin.Context) {
 }
 
 func (h *GPSHandler) authorizeTripWrite(c *gin.Context, tripID int64) bool {
+	if !h.requireAuth {
+		return true
+	}
 	if middleware.AuthenticatedWithAPIKey(c) {
 		return true
 	}
@@ -139,6 +143,9 @@ func (h *GPSHandler) authorizeTripWrite(c *gin.Context, tripID int64) bool {
 }
 
 func (h *GPSHandler) authorizeTripRead(c *gin.Context, tripID int64) bool {
+	if !h.requireAuth {
+		return true
+	}
 	if middleware.AuthenticatedWithAPIKey(c) {
 		return true
 	}

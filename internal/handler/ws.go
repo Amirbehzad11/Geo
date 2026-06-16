@@ -82,13 +82,14 @@ func originHostMatches(origin, allowed string) bool {
 
 // WSHandler upgrades HTTP connections to WebSocket for live trip event streaming.
 type WSHandler struct {
-	hub   *ws.Hub
-	authz TripAuthorizer
+	hub         *ws.Hub
+	authz       TripAuthorizer
+	requireAuth bool
 }
 
 // NewWSHandler creates a WSHandler backed by the given hub.
-func NewWSHandler(hub *ws.Hub, authorizers ...TripAuthorizer) *WSHandler {
-	h := &WSHandler{hub: hub}
+func NewWSHandler(hub *ws.Hub, requireAuth bool, authorizers ...TripAuthorizer) *WSHandler {
+	h := &WSHandler{hub: hub, requireAuth: requireAuth}
 	if len(authorizers) > 0 {
 		h.authz = authorizers[0]
 	}
@@ -145,6 +146,9 @@ func (h *WSHandler) HandleConnection(c *gin.Context) {
 }
 
 func (h *WSHandler) authorizeTripRead(c *gin.Context, tripID int64) bool {
+	if !h.requireAuth {
+		return true
+	}
 	if middleware.AuthenticatedWithAPIKey(c) {
 		return true
 	}

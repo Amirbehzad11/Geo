@@ -73,6 +73,8 @@ type ShipmentDB struct {
 	table             string
 	idColumn          string // quoted shipment primary key
 	vehicleAllowedCol string // quoted vehicle_allowed column used for filtering/enrichment
+	visibleOnMapCol   string // quoted visible_on_map column for map display
+	shipmentCodeCol   string // quoted shipment_code column
 	locationColumn    string // quoted PostGIS geometry column
 	endLocationColumn string // quoted destination geometry column (optional)
 	latColumn         string // quoted flat lat column (legacy / MySQL)
@@ -103,6 +105,9 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 
 	driverName, dialect, err := normalizeShipmentDriver(cfg.Driver)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateShipmentDriverDSN(dialect, cfg.DSN); err != nil {
 		return nil, err
 	}
 
@@ -276,6 +281,16 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		db.Close()
 		return nil, fmt.Errorf("shipment vehicle_allowed column: %w", err)
 	}
+	visibleOnMapCol, err := quoteIdentifier(dialect, "visible_on_map")
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("shipment visible_on_map column: %w", err)
+	}
+	shipmentCodeCol, err := quoteIdentifier(dialect, "shipment_code")
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("shipment shipment_code column: %w", err)
+	}
 
 	return &ShipmentDB{
 		db:                     db,
@@ -283,6 +298,8 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		table:                  table,
 		idColumn:               idColumn,
 		vehicleAllowedCol:      vehicleAllowedCol,
+		visibleOnMapCol:        visibleOnMapCol,
+		shipmentCodeCol:        shipmentCodeCol,
 		locationColumn:         locationColumn,
 		endLocationColumn:      endLocationColumn,
 		latColumn:              latColumn,
@@ -611,6 +628,8 @@ func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit i
 	query := fmt.Sprintf(`
 SELECT s.%[8]s AS id,
     s.%[9]s AS vehicle_allowed,
+    s.%[11]s AS visible_on_map,
+    s.%[12]s AS shipment_code,
     ST_Y(%[1]s::geometry)::float8 AS start_lat,
     ST_X(%[1]s::geometry)::float8 AS start_lng%[2]s,
     ST_Distance(%[1]s::geography, ST_MakePoint($2, $1)::geography) / 1000.0 AS distance_km%[4]s%[10]s
@@ -630,9 +649,47 @@ LIMIT $4`,
 		s.idColumn,
 		s.vehicleAllowedCol,
 		s.shipmentImagesSelect,
+		s.visibleOnMapCol,
+		s.shipmentCodeCol,
 	)
 
 	return query, args
+}
+
+func excludedShippingStatusLabelsSQL() string {
+	return "'" + strings.Join(excludedShippingStatusLabels, "','") + "'"
+}
+
+func (s *ShipmentDB) buildActiveShippingExistsClause(shipmentRef string) string {
+	shippingsTable, err := quoteQualifiedIdentifier(s.dialect, "shippings")
+	if err != nil {
+		shippingsTable = `"shippings"`
+	}
+	statusesTable, err := quoteQualifiedIdentifier(s.dialect, "shipping_statuses")
+	if err != nil {
+		statusesTable = `"shipping_statuses"`
+	}
+	shipmentIDCol, _ := quoteIdentifier(s.dialect, "shipment_id")
+	lastStatusCol, _ := quoteIdentifier(s.dialect, "last_status_id")
+	statusIDCol, _ := quoteIdentifier(s.dialect, "id")
+	labelCol, _ := quoteIdentifier(s.dialect, "label")
+
+	return fmt.Sprintf(`EXISTS (
+    SELECT 1
+    FROM %s AS sh
+    JOIN %s AS ss ON ss.%s = sh.%s
+    WHERE sh.%s = %s
+      AND UPPER(ss.%s) NOT IN (%s)
+)`,
+		shippingsTable,
+		statusesTable,
+		statusIDCol,
+		lastStatusCol,
+		shipmentIDCol,
+		shipmentRef,
+		labelCol,
+		excludedShippingStatusLabelsSQL(),
+	)
 }
 
 // buildNearbyQueryHaversine is the legacy approach for separate float lat/lng
@@ -664,6 +721,8 @@ SELECT *
 FROM (
     SELECT s.%s AS id,
         s.%s AS vehicle_allowed,
+        s.%s AS visible_on_map,
+        s.%s AS shipment_code,
         %s AS start_lat,
         %s AS start_lng,
         %s AS distance_km%s%s
@@ -679,6 +738,8 @@ ORDER BY distance_km ASC
 LIMIT %s`,
 		s.idColumn,
 		s.vehicleAllowedCol,
+		s.visibleOnMapCol,
+		s.shipmentCodeCol,
 		latRef,
 		lngRef,
 		distanceExpr,
@@ -738,7 +799,7 @@ func coordinateExpression(dialect, columnRef string) string {
 func buildShipmentImagesSelect(dialect, table, shipmentIDColumn, imageColumn, imageIDColumn, shipmentIDSelectColumn string) string {
 	if dialect == "postgres" {
 		return fmt.Sprintf(
-			`,\n    (SELECT COALESCE(json_agg(si.%[3]s ORDER BY si.%[4]s) FILTER (WHERE si.%[3]s IS NOT NULL), '[]'::json) FROM %[1]s AS si WHERE si.%[2]s = s.%[5]s) AS images`,
+			",\n    (SELECT COALESCE(json_agg(si.%[3]s ORDER BY si.%[4]s) FILTER (WHERE si.%[3]s IS NOT NULL), '[]'::json) FROM %[1]s AS si WHERE si.%[2]s = s.%[5]s) AS images",
 			table,
 			shipmentIDColumn,
 			imageColumn,
@@ -747,7 +808,7 @@ func buildShipmentImagesSelect(dialect, table, shipmentIDColumn, imageColumn, im
 		)
 	}
 	return fmt.Sprintf(
-		`,\n    (SELECT COALESCE(JSON_ARRAYAGG(si.%[3]s), JSON_ARRAY()) FROM %[1]s AS si WHERE si.%[2]s = s.%[4]s) AS images`,
+		",\n    (SELECT COALESCE(JSON_ARRAYAGG(si.%[3]s), JSON_ARRAY()) FROM %[1]s AS si WHERE si.%[2]s = s.%[4]s) AS images",
 		table,
 		shipmentIDColumn,
 		imageColumn,
@@ -871,6 +932,24 @@ func normalizeShipmentDriver(raw string) (driverName, dialect string, err error)
 	default:
 		return "", "", fmt.Errorf("unsupported shipment db driver %q", raw)
 	}
+}
+
+// validateShipmentDriverDSN rejects obvious driver/DSN mismatches that would
+// otherwise produce dialect-specific SQL (backticks vs double quotes) against
+// the wrong database engine.
+func validateShipmentDriverDSN(dialect, dsn string) error {
+	lower := strings.ToLower(strings.TrimSpace(dsn))
+	switch dialect {
+	case "mysql":
+		if strings.Contains(lower, "sslmode=") || strings.HasPrefix(lower, "host=") {
+			return fmt.Errorf("SHIPMENT_DB_DRIVER is mysql but DSN looks like PostgreSQL; set SHIPMENT_DB_DRIVER=postgres")
+		}
+	case "postgres":
+		if strings.Contains(lower, "@tcp(") {
+			return fmt.Errorf("SHIPMENT_DB_DRIVER is postgres but DSN looks like MySQL; set SHIPMENT_DB_DRIVER=mysql")
+		}
+	}
+	return nil
 }
 
 func quoteQualifiedIdentifier(dialect, ident string) (string, error) {
