@@ -1,0 +1,58 @@
+groups:
+  - name: geo_websocket
+    rules:
+      - alert: WebSocketConnectionSpike
+        expr: sum(geo_ws_connections_total{event="opened"}) - sum(geo_ws_connections_total{event="closed"}) > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: WebSocket connection spike detected
+
+      - alert: WebSocketHighAuthFailureRate
+        expr: sum(rate(geo_ws_auth_failures_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Elevated WebSocket authentication failures
+
+      - alert: WebSocketHighErrorRate
+        expr: sum(rate(geo_ws_errors_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Elevated WebSocket error rate
+
+      - alert: WebSocketHighMessageLatency
+        expr: histogram_quantile(0.95, sum(rate(geo_ws_message_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: WebSocket message handling p95 latency high
+
+      - alert: WebSocketRateLimitAbuse
+        expr: sum(rate(geo_ws_rate_limited_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: WebSocket rate-limit abuse spike
+
+      - alert: WebSocketNoTraffic
+        expr: sum(rate(geo_ws_messages_total[15m])) == 0 and sum(geo_ws_active_connections) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: No WebSocket traffic detected
+
+      - alert: WebSocketLocationAbuse
+        expr: sum(rate(geo_ws_location_rejected_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Location spoofing or spam detected on WebSocket

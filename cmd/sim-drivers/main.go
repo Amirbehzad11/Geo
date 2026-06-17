@@ -78,6 +78,8 @@ type config struct {
 	forceSeed    bool
 	resetGeo     bool
 	keepaliveSec int
+	anchorLat    float64
+	anchorLng    float64
 }
 
 func main() {
@@ -155,6 +157,8 @@ func parseFlags() config {
 	forceSeed := flag.Bool("force-seed", false, "Always seed even when Redis already has drivers")
 	resetGeo := flag.Bool("reset-geo", false, "Delete geo key and driver location hashes before seeding")
 	keepaliveSec := flag.Int("keepalive-sec", 90, "Re-publish idle drivers before TTL (0=off)")
+	anchorLat := flag.Float64("anchor-lat", 0, "Optional fixed lat for the first simulated driver (0=random)")
+	anchorLng := flag.Float64("anchor-lng", 0, "Optional fixed lng for the first simulated driver (0=random)")
 	flag.Parse()
 
 	reg, ok := regions[strings.ToLower(strings.TrimSpace(*city))]
@@ -194,6 +198,8 @@ func parseFlags() config {
 		forceSeed:    *forceSeed,
 		resetGeo:     *resetGeo,
 		keepaliveSec: *keepaliveSec,
+		anchorLat:    *anchorLat,
+		anchorLng:    *anchorLng,
 	}
 }
 
@@ -201,7 +207,12 @@ func buildDrivers(cfg config) []driver {
 	drivers := make([]driver, cfg.count)
 	for i := 0; i < cfg.count; i++ {
 		rng := rand.New(rand.NewPCG(uint64(i+1), uint64(i+1)*131))
-		lat, lng := randomCoordInRegion(rng, cfg.region)
+		var lat, lng float64
+		if i == 0 && cfg.anchorLat != 0 && cfg.anchorLng != 0 {
+			lat, lng = cfg.anchorLat, cfg.anchorLng
+		} else {
+			lat, lng = randomCoordInRegion(rng, cfg.region)
+		}
 		drivers[i] = driver{
 			id: i + 1, lat: lat, lng: lng,
 			sentLat: lat, sentLng: lng,

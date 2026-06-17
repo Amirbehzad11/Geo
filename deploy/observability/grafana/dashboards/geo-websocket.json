@@ -1,0 +1,87 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "expr": "geo_ws_active_connections{channel=\"shipment.nearby\"}", "legendFormat": "active connections", "refId": "A" }
+      ],
+      "title": "WebSocket connections (active)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "targets": [
+        { "expr": "sum(rate(geo_ws_messages_total{channel=\"shipment.nearby\"}[1m])) by (direction)", "legendFormat": "{{direction}}", "refId": "A" }
+      ],
+      "title": "Message throughput (msg/s)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "targets": [
+        { "expr": "sum(rate(geo_ws_errors_total{channel=\"shipment.nearby\"}[5m]))", "legendFormat": "errors/s", "refId": "A" },
+        { "expr": "sum(rate(geo_ws_auth_failures_total{channel=\"shipment.nearby\"}[5m]))", "legendFormat": "auth failures/s", "refId": "B" },
+        { "expr": "sum(rate(geo_ws_rate_limited_total{channel=\"shipment.nearby\"}[5m]))", "legendFormat": "rate limits/s", "refId": "C" }
+      ],
+      "title": "Error rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(geo_ws_message_duration_seconds_bucket{channel=\"shipment.nearby\"}[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(geo_ws_message_duration_seconds_bucket{channel=\"shipment.nearby\"}[5m])) by (le))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum(rate(geo_ws_message_duration_seconds_bucket{channel=\"shipment.nearby\"}[5m])) by (le))", "legendFormat": "p99", "refId": "C" }
+      ],
+      "title": "Message handling latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 5,
+      "targets": [
+        { "expr": "topk(10, geo_ws_connections_per_ip{channel=\"shipment.nearby\"})", "legendFormat": "{{client_ip}}", "refId": "A" }
+      ],
+      "title": "Connections per IP (top 10)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "options": { "showLabels": false, "showTime": true, "wrapLogMessage": true },
+      "targets": [
+        { "expr": "{service=\"geo-service\"} | json | msg=\"websocket\" | channel=\"shipment.nearby\" | event_type=~\"connect|disconnect|message|error|auth_failed|rate_limit\"", "refId": "A" }
+      ],
+      "title": "WebSocket event logs",
+      "type": "logs"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["geo-service", "websocket"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Geo Service — WebSocket (shipment nearby)",
+  "uid": "geo-ws-shipment"
+}

@@ -2,6 +2,7 @@ package wsnearby
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -42,6 +43,14 @@ func NewSession(conn *websocket.Conn, cfg Config, ip string, userID int64, onClo
 		lastAct: time.Now(),
 		onClose: onClose,
 	}
+}
+
+func (s *Session) UserID() int64 {
+	return s.userID
+}
+
+func (s *Session) ConnectionID() string {
+	return fmt.Sprintf("c:%p", s)
 }
 
 func (s *Session) Touch() {

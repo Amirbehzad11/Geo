@@ -18,6 +18,7 @@
 - [مرجع API](#مرجع-api)
 - [راهنمای WebSocket](#راهنمای-websocket)
 - [تنظیمات محیطی](#تنظیمات-محیطی)
+- [شبیه‌سازهای محلی](#شبیه‌سازهای-محلی)
 - [موتورهای مسیریابی](#موتورهای-مسیریابی)
 - [حالت‌های حمل‌ونقل](#حالت‌های-حمل‌ونقل)
 - [وارد کردن داده OSM](#وارد-کردن-داده-osm)
@@ -34,7 +35,7 @@
 | **حالت حمل** | `car`, `motorcycle`, `bus`, `walking`, `train`, `public_transport`, `airplane` |
 | **چند مقصد** | `POST /route/waypoints` با مرتب‌سازی نزدیک‌ترین همسایه |
 | **GPS** | هموارسازی EMA، سرعت، تشخیص انحراف از مسیر، Redis، تاریخچه PostGIS |
-| **WebSocket** | رویدادهای زنده سفر؛ بسته‌های نزدیک؛ جستجوی راننده |
+| **WebSocket** | رویداد زنده سفر؛ بسته نزدیک (مسافر)؛ راننده نزدیک (فرستنده)؛ JSON ساختاریافته + legacy |
 | **دیتابیس Laravel** | کوئری read-only روی `shipments` با PostGIS، تصاویر، نوع وسیله |
 | **امنیت** | JWT مشترک با Laravel، API key اختیاری، CORS، rate limit |
 | **دسترسی سطح شیء** | مالکیت trip و دسترسی فرستنده/گیرنده shipment |
@@ -126,7 +127,7 @@ go build -o osm2postgis ./cmd/osm2postgis
 ### ۴. اجرای سرویس
 
 ```bash
-docker compose up --build geo-service
+docker compose up -d --build geo-service
 ```
 
 | آدرس | کاربرد |
@@ -136,7 +137,15 @@ docker compose up --build geo-service
 | `http://localhost:8080/health` | سلامت سرویس |
 | `http://localhost:8080/metrics` | Prometheus |
 
-### ۵. حالت OSRM (پیشنهادی برای production ایران)
+### ۵. (اختیاری) شبیه‌سازهای محلی
+
+```bash
+docker compose --profile sim up -d --build sim-drivers sim-passenger
+```
+
+جزئیات در بخش [شبیه‌سازهای محلی](#شبیه‌سازهای-محلی).
+
+### ۶. حالت OSRM (پیشنهادی برای production ایران)
 
 ```bash
 COMPOSE_PROFILES=osrm ROUTING_BACKEND=osrm INTERNAL_GRAPH_ENABLED=false \
@@ -197,11 +206,14 @@ const ws = new WebSocket('ws://localhost:8080/ws/trip/42', ['bearer', token]);
 
 سرور توکن را از `Sec-WebSocket-Protocol: bearer, <token>` می‌خواند.
 
+> **توجه:** WebSocket لاراول **Reverb/Pusher** (`ws://host:8084/app/...`) سرویس جداگانه است. geo-service روی پورت **8080** و مسیرهای `/ws/trip/:id` و `/ws/shipments/nearby` کار می‌کند.
+
 ### نکته امنیتی
 
 - `JWT_SECRET` در Go و Laravel **باید یکی باشد** (`tymon/jwt-auth`)
 - در production از `CORS_ALLOWED_ORIGINS=*` استفاده نکنید
-- `JWT_AUTH_ENABLED=true` را خاموش نگذارید مگر در محیط dev
+- در production `WS_SHIPMENT_AUTH_REQUIRED=true` و `JWT_AUTH_ENABLED=true` بگذارید
+- برای dev محلی می‌توانید هر سه را `false` کنید (جزئیات در [راهنمای WebSocket](#راهنمای-websocket))
 
 ---
 
@@ -325,6 +337,43 @@ curl -s -X POST http://localhost:8080/driver-location \
 
 ## راهنمای WebSocket
 
+دو endpoint روی همان پورت HTTP (`8080`):
+
+| Endpoint | کاربرد | احراز هویت (پیش‌فرض) |
+|----------|--------|----------------------|
+| `GET /ws/trip/:id` | رویدادهای زنده سفر | خاموش (`WEBSOCKET_AUTH_ENABLED=false`) |
+| `GET /ws/shipments/nearby` | بسته/راننده نزدیک | روشن (`WS_SHIPMENT_AUTH_REQUIRED=true`) |
+
+### تنظیمات dev (بدون تغییر فرانت)
+
+برای تست روی `ws://192.168.x.x:8080` بدون JWT:
+
+```env
+JWT_AUTH_ENABLED=false
+WEBSOCKET_AUTH_ENABLED=false
+WS_SHIPMENT_AUTH_REQUIRED=false
+WS_SHIPMENT_LEGACY_FORMAT=true
+WS_SHIPMENT_REQUIRE_TLS=false
+CORS_ALLOWED_ORIGINS=*
+```
+
+بعد از ویرایش `.env` سرویس را ری‌استارت کنید.
+
+### ارسال توکن (production)
+
+مرورگر نمی‌تواند `Authorization` روی handshake بفرستد:
+
+- `Sec-WebSocket-Protocol: bearer, <jwt>`
+- `?token=<jwt>`
+- هدر `Authorization` (موبایل)
+
+```js
+const token = localStorage.getItem('access_token');
+const ws = new WebSocket('ws://localhost:8080/ws/trip/42', ['bearer', token]);
+```
+
+---
+
 ### `GET /ws/trip/:id` — رویدادهای زنده سفر
 
 ```js
@@ -336,69 +385,116 @@ ws.onmessage = (e) => {
 };
 ```
 
-نیاز به JWT دارد. کاربر باید مالک trip یا طرف shipping مرتبط باشد.
+با `WEBSOCKET_AUTH_ENABLED=true` کاربر باید مالک trip یا طرف shipping مرتبط باشد.
 
-### `GET /ws/shipments/nearby` — بسته‌های نزدیک / رانندگان
+موقعیت مسافر از `POST /gps/update` می‌آید (sim-passenger).
 
-**حالت مسافر (passenger)** — جستجوی shipment نزدیک:
+---
 
-```js
-const ws = new WebSocket('ws://localhost:8080/ws/shipments/nearby', ['bearer', token]);
+### `GET /ws/shipments/nearby` — بسته / راننده نزدیک
 
-ws.onopen = () => {
-  ws.send(JSON.stringify({
-    type: 'passenger',       // یا خالی / shipment.nearby
-    lat: 35.6892,
-    lng: 51.3890,
-    radius_km: 2,
-    limit: 50,
-    filter_vehicle_types: [1, 2, 3]
-  }));
-};
+پس از اتصال:
+
+```json
+{
+  "type": "connected",
+  "channel": "shipment.nearby",
+  "protocol": {
+    "version": 1,
+    "messages": ["SUBSCRIBE_LOCATION", "PING"]
+  }
+}
 ```
 
-**حالت فرستنده (sender)** — جستجوی راننده نزدیک در Redis:
+#### فرمت پیام
+
+**Legacy** (`WS_SHIPMENT_LEGACY_FORMAT=true`) — شیء تخت:
 
 ```js
+// مسافر — جستجوی shipment
+ws.send(JSON.stringify({
+  type: 'passenger',
+  lat: 32.646625,
+  lng: 51.664761,
+  radius_km: 2,
+  limit: 50
+}));
+
+// فرستنده — جستجوی راننده (Redis GEO)
 ws.send(JSON.stringify({
   type: 'sender',
-  lat: 35.6892,
-  lng: 51.3890,
-  radius_km: 20
+  lat: 32.646625,
+  lng: 51.664761,
+  radius_km: 20,
+  limit: 100
 }));
 ```
 
-**جستجو با query string** (یک‌بار هنگام اتصال):
+**ساختاریافته** (پیشنهادی برای کلاینت جدید):
+
+```js
+ws.send(JSON.stringify({
+  type: 'SUBSCRIBE_LOCATION',
+  data: {
+    lat: 32.646625,
+    lng: 51.664761,
+    role: 'sender',
+    radius_km: 20,
+    limit: 100
+  }
+}));
+
+ws.send(JSON.stringify({ type: 'PING' }));
+```
+
+**Query string** (یک‌بار هنگام اتصال):
 
 ```
-/ws/shipments/nearby?type=passenger&lat=35.6892&lng=51.3890&radius_km=2
+/ws/shipments/nearby?type=sender&lat=32.646625&lng=51.664761&radius_km=20
 ```
 
-**نمونه پاسخ:**
+#### پاسخ‌ها
+
+**`shipment.nearby`** (مسافر):
 
 ```json
 {
   "type": "shipment.nearby",
-  "timestamp_ms": 1779100000000,
-  "query": { "lat": 35.6892, "lng": 51.389, "radius_km": 2, "limit": 100 },
   "count": 1,
-  "shipments": [
+  "shipments": [{ "id": 42, "distance_km": 0.12, "vehicles": [], "images": [] }]
+}
+```
+
+**`driver.nearby`** (فرستنده):
+
+```json
+{
+  "type": "driver.nearby",
+  "count": 1,
+  "drivers": [
     {
-      "id": 42,
-      "start_lat": 35.69,
-      "start_lng": 51.39,
-      "destination_lat": 35.80,
-      "destination_lng": 51.43,
-      "distance_km": 0.12,
-      "content_image": "https://...",
-      "images": ["path/to/image1.jpg"],
-      "vehicles": [{ "id": 1, "label": "car", "title": "سواری" }]
+      "id": "27",
+      "driver_id": 27,
+      "lat": 32.646625,
+      "lng": 51.664761,
+      "distance_km": 0.0001,
+      "trips": []
     }
   ]
 }
 ```
 
-> فقط ستون‌های allowlist از جدول shipment خوانده می‌شود — `SELECT *` استفاده نمی‌شود.
+موقعیت راننده از Redis GEO (`DRIVER_GEO_KEY`) خوانده می‌شود. hash هر راننده بعد از **۲ دقیقه** منقضی می‌شود مگر `sim-drivers` یا `POST /driver-location` آن را تازه کند.
+
+#### خطاهای WebSocket
+
+```json
+{ "type": "error", "code": "RATE_LIMITED", "message": "..." }
+```
+
+کدهای رایج: `UNAUTHORIZED`, `VALIDATION_ERROR`, `DRIVER_LOCATION_DISABLED`, `SHIPMENT_SEARCH_DISABLED`.
+
+> فقط ستون‌های allowlist از shipment خوانده می‌شود.
 
 ---
 
@@ -460,6 +556,76 @@ ws.send(JSON.stringify({
 | `DEVIATION_THRESH_KM` | `0.05` | آستانه هشدار انحراف از مسیر |
 | `DRIVER_GEO_KEY` | `drivers:geo` | کلید Redis GEO |
 | `DRIVER_SEARCH_RADIUS_KM` | `20` | شعاع جستجوی راننده |
+
+### امنیت WebSocket (`/ws/shipments/nearby`)
+
+| متغیر | پیش‌فرض | توضیح |
+|-------|---------|--------|
+| `WS_SHIPMENT_AUTH_REQUIRED` | `true` | JWT/API key هنگام upgrade |
+| `WS_SHIPMENT_REQUIRE_TLS` | `false` | فقط WSS |
+| `WS_SHIPMENT_LEGACY_FORMAT` | `true` | پذیرش `{type,lat,lng}` تخت |
+| `WS_SHIPMENT_MAX_PER_IP` | `10` | حداکثر اتصال همزمان per IP |
+| `WS_SHIPMENT_MESSAGES_PER_SEC` | `2` | محدودیت نرخ پیام |
+| `WS_SHIPMENT_IDLE_TIMEOUT_SEC` | `90` | قطع اتصال بیکار |
+| `WEBSOCKET_AUTH_ENABLED` | `false` | احراز هویت `/ws/trip/:id` |
+
+---
+
+## شبیه‌سازهای محلی
+
+پروفایل Docker `sim` برای تست بدون موبایل واقعی.
+
+### اجرا
+
+```bash
+docker compose --profile sim up -d --build sim-drivers sim-passenger
+```
+
+| سرویس | کار |
+|--------|-----|
+| **sim-drivers** | موقعیت راننده در Redis GEO |
+| **sim-passenger** | ارسال GPS به `/gps/update` روی مسیر اصفهان |
+
+### `sim-drivers`
+
+- فقط وقتی حرکت ≥ `-min-move-m` متر باشد Redis را آپدیت می‌کند
+- هر `-keepalive-sec` ثانیه راننده بیکار را دوباره publish می‌کند (TTL hash = ۲ دقیقه)
+
+پیش‌فرض `docker-compose.yml`:
+
+| فلگ | مقدار | معنی |
+|-----|-------|------|
+| `-id-start` | `27` | شناسه راننده در Redis |
+| `-anchor-lat/lng` | نقطه تست اصفهان | موقعیت اولیه |
+| `-reset-geo` | فعال | پاک کردن GEO قبل از seed |
+
+```bash
+go run ./cmd/sim-drivers -redis localhost:6379 -count 1 -id-start=27 \
+  -anchor-lat=32.646625 -anchor-lng=51.664761 -reset-geo
+```
+
+### `sim-passenger`
+
+مسیر **شروع → pickup → مقصد** را شبیه‌سازی می‌کند.
+
+| فلگ | پیش‌فرض | معنی |
+|-----|---------|------|
+| `-trip` | `4` | `trips.id` لاراول |
+| `-tick` | `4s` | فاصله ارسال GPS |
+
+در dev با `JWT_AUTH_ENABLED=false` بدون توکن کار می‌کند.
+
+### تست سریع WebSocket (sender)
+
+```bash
+python tools/test_nearby_ws.py 20 100
+```
+
+یا:
+
+```json
+{"type":"sender","lat":32.646625,"lng":51.664761,"radius_km":20}
+```
 
 ---
 
@@ -567,6 +733,8 @@ make loadtest   # تست بار ۵۰ کاربر همزمان
 ```
 cmd/
   server/           نقطه ورود HTTP
+  sim-drivers/      شبیه‌ساز موقعیت راننده (Redis GEO)
+  sim-passenger/    شبیه‌ساز GPS مسافر (/gps/update)
   osm2postgis/      OSM → road_segments
   osm2stations/     OSM → rail_stations
   osm2transit/      OSM → overlay ترانزیت
@@ -575,7 +743,7 @@ cmd/
 config/             تنظیمات از env
 
 internal/
-  cache/            Redis
+  cache/            Redis + GEO
   events/           Pub/Sub
   gps/              GPS handler + service
   handler/          health، driver، WebSocket
@@ -585,9 +753,12 @@ internal/
   service/          shipment search، driver
   storage/          PostGIS، shipment DB، batch writer
   utils/            haversine، polyline، EMA
-  ws/               hub WebSocket
+  ws/               hub WebSocket سفر
+  wsnearby/         پروتکل WebSocket nearby + session
+  wsplatform/       متریک و helper مشترک WS
 
-docs/               Swagger + این فایل فارسی
+tools/              test_nearby_ws.py و ابزار dev
+docs/               این فایل + Swagger
 ```
 
 ---
@@ -596,11 +767,14 @@ docs/               Swagger + این فایل فارسی
 
 | مشکل | علت احتمالی | راه‌حل |
 |------|-------------|--------|
-| `401 UNAUTHORIZED` | JWT نامعتبر یا secret متفاوت | `JWT_SECRET` را با Laravel هم‌سان کنید |
-| `403 FORBIDDEN` trip | کاربر مالک trip نیست | `trip_id` و `user_id` توکن را بررسی کنید |
-| `SHIPMENT_SEARCH_DISABLED` | `SHIPMENT_DB_DSN` خالی | DSN و driver را در `.env` تنظیم کنید |
+| `401 UNAUTHORIZED` | JWT یا secret اشتباه | `JWT_SECRET` را با Laravel یکی کنید؛ یا auth را در dev خاموش کنید |
+| `driver.nearby` → `count: 0` | راننده زنده در Redis نیست | `docker compose --profile sim up -d sim-drivers` |
+| GEO پر است ولی `count: 0` | hash راننده منقضی شده (۲ دقیقه) | `sim-drivers` را همیشه روشن نگه دارید |
+| `SHIPMENT_SEARCH_DISABLED` | `SHIPMENT_DB_DSN` خالی | DSN لاراول را در `.env` بگذارید |
 | WebSocket قطع می‌شود | Origin مجاز نیست | `CORS_ALLOWED_ORIGINS` را اصلاح کنید |
-| مسیریابی `503` | گراف بارگذاری نشده | `osm2postgis` اجرا کنید یا OSRM را بالا بیاورید |
+| `gps/update` خطای 401 | auth روشن بدون توکن | `JWT_AUTH_ENABLED=false` یا `-api-key` در sim-passenger |
+| مسیریابی `503` | گراف بارگذاری نشده | `osm2postgis` یا پروفایل OSRM |
+| آدرس Reverb/Pusher کار نمی‌کند | سرویس اشتباه | Reverb لاراول ≠ geo-service؛ پورت **8080** و مسیرهای بالا |
 | بسته‌ها بدون `images` | جدول تنظیم نشده | `SHIPMENT_IMAGES_TABLE=shipment_images` |
 
 ---

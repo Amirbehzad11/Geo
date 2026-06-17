@@ -217,14 +217,16 @@ services:
       REDIS_ADDR: redis:6379
       DRIVER_GEO_KEY: drivers:geo
       SIM_DRIVER_COUNT: "1"
-      SIM_DRIVER_ID_START: "16"
+      SIM_DRIVER_ID_START: "27"
       SIM_DRIVER_CITY: isfahan
       SIM_DRIVER_WORKERS: "4"
     command:
       - -redis=redis:6379
       - -city=isfahan
       - -count=1
-      - -id-start=16
+      - -id-start=27
+      - -anchor-lat=32.646625
+      - -anchor-lng=51.664761
       - -workers=4
       - -tick=5s
       - -batch-size=100

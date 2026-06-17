@@ -23,6 +23,7 @@ In the **MrchamedonBeta** stack, this service acts as the GIS layer: Laravel han
 - [API Reference](#api-reference)
 - [WebSocket Guide](#websocket-guide)
 - [Configuration](#configuration)
+- [Local Simulators](#local-simulators)
 - [Routing Backends](#routing-backends)
 - [Transport Modes](#transport-modes)
 - [OSM Data Import](#osm-data-import)
@@ -40,7 +41,7 @@ In the **MrchamedonBeta** stack, this service acts as the GIS layer: Laravel han
 | **Transport modes** | `car`, `motorcycle`, `bus`, `walking`, `train`, `public_transport`, `airplane` |
 | **Multi-waypoint** | `POST /route/waypoints` with greedy nearest-neighbor ordering |
 | **GPS pipeline** | EMA smoothing, speed, cross-track deviation detection, Redis state, PostGIS batch history |
-| **WebSocket** | Live `location.updated` / `deviation.detected` per trip; nearby shipments; driver search |
+| **WebSocket** | Live trip events; nearby shipments (passenger); nearby drivers (sender); structured + legacy JSON |
 | **Laravel DB** | Read-only PostGIS queries on `shipments` (origin/destination geometry, images, vehicle types) |
 | **Security** | JWT (Laravel `tymon/jwt-auth`), optional API key, CORS/Origin checks, rate limits, body size cap |
 | **Object-level auth** | Trip ownership and shipment-linked access enforced against Laravel schema |
@@ -134,7 +135,7 @@ Bounding box format: `lat_min,lng_min,lat_max,lng_max`.
 ### 4. Start geo-service
 
 ```bash
-docker compose up --build geo-service
+docker compose up -d --build geo-service
 ```
 
 | Endpoint | URL |
@@ -144,7 +145,18 @@ docker compose up --build geo-service
 | Health | `http://localhost:8080/health` |
 | Prometheus | `http://localhost:8080/metrics` |
 
-### 5. OSRM mode (production, large graphs)
+### 5. (Optional) Start local simulators
+
+For development without real mobile clients:
+
+```bash
+# Driver in Redis GEO (sender search) + passenger GPS along a trip
+docker compose --profile sim up -d --build sim-drivers sim-passenger
+```
+
+See [Local Simulators](#local-simulators) for flags and troubleshooting.
+
+### 6. OSRM mode (production, large graphs)
 
 ```bash
 # One-time OSRM preprocessing — see docker-compose.yml comments
@@ -218,7 +230,9 @@ The server reads `Sec-WebSocket-Protocol: bearer, <token>`.
 | **JWT** (default) | `Authorization: Bearer …` or WS subprotocol | Mobile app, Laravel frontend |
 | **API key** | `X-API-Key: …` | Internal service-to-service (bypasses user-level checks) |
 
-Enable via `JWT_AUTH_ENABLED=true` and/or `API_KEY_ENABLED=true`. At least one must be configured in production.
+Enable via `JWT_AUTH_ENABLED=true` and/or `API_KEY_ENABLED=true`. At least one should be enabled in production.
+
+> **Note:** Laravel **Reverb/Pusher** (`ws://host:8084/app/...`) is a separate service. geo-service WebSockets live on port **8080** at `/ws/trip/:id` and `/ws/shipments/nearby`.
 
 ### Object-level access control
 
@@ -346,6 +360,43 @@ Request latency histograms, route counters, active WebSocket gauge.
 
 ## WebSocket Guide
 
+geo-service exposes two WebSocket endpoints on the same port as HTTP (`8080`).
+
+| Endpoint | Purpose | Auth (default) |
+|----------|---------|----------------|
+| `GET /ws/trip/:id` | Live `location.updated` / `deviation.detected` for one trip | Off (`WEBSOCKET_AUTH_ENABLED=false`) |
+| `GET /ws/shipments/nearby` | Nearby shipments (passenger) or drivers (sender) | On (`WS_SHIPMENT_AUTH_REQUIRED=true`) |
+
+### Development-friendly auth (no frontend changes)
+
+For local testing against `ws://192.168.x.x:8080` without JWT:
+
+```env
+JWT_AUTH_ENABLED=false
+WEBSOCKET_AUTH_ENABLED=false
+WS_SHIPMENT_AUTH_REQUIRED=false
+WS_SHIPMENT_LEGACY_FORMAT=true
+WS_SHIPMENT_REQUIRE_TLS=false
+CORS_ALLOWED_ORIGINS=*
+```
+
+Restart `geo-service` after editing `.env`.
+
+### Token delivery (production)
+
+Browsers cannot set `Authorization` on the WebSocket handshake. Use one of:
+
+- `Sec-WebSocket-Protocol: bearer, <jwt>`
+- Query string: `?token=<jwt>`
+- Header `Authorization: Bearer <jwt>` (mobile / non-browser clients)
+
+```js
+const token = localStorage.getItem('access_token');
+const ws = new WebSocket('ws://localhost:8080/ws/trip/42', ['bearer', token]);
+```
+
+---
+
 ### `GET /ws/trip/:id` — Live trip events
 
 ```js
@@ -357,64 +408,139 @@ ws.onmessage = (e) => {
 };
 ```
 
-Requires JWT. User must own the trip or be linked via an active shipping record.
+When `WEBSOCKET_AUTH_ENABLED=true`, the user must own the trip or be linked via an active `shippings` row.
+
+Passenger GPS updates are posted to `POST /gps/update` (see sim-passenger below).
+
+---
 
 ### `GET /ws/shipments/nearby` — Nearby shipments / drivers
 
-**Passenger mode** (default) — find shipments near coordinates:
+On connect the server sends:
 
-```js
-const ws = new WebSocket('ws://localhost:8080/ws/shipments/nearby', ['bearer', token]);
-
-ws.onopen = () => {
-  ws.send(JSON.stringify({
-    type: 'passenger',
-    lat: 35.6892,
-    lng: 51.3890,
-    radius_km: 2,
-    limit: 50,
-    filter_vehicle_types: [1, 2, 3]
-  }));
-};
-
-ws.onmessage = (e) => console.log(JSON.parse(e.data));
+```json
+{
+  "type": "connected",
+  "channel": "shipment.nearby",
+  "protocol": {
+    "version": 1,
+    "messages": ["SUBSCRIBE_LOCATION", "PING"]
+  }
+}
 ```
 
-**Sender mode** — find nearby drivers in Redis GEO:
+#### Message formats
+
+**Legacy JSON** (enabled when `WS_SHIPMENT_LEGACY_FORMAT=true`) — flat object, no envelope:
 
 ```js
-ws.send(JSON.stringify({ type: 'sender', lat: 35.6892, lng: 51.3890, radius_km: 20 }));
+// Passenger — find shipments
+ws.send(JSON.stringify({
+  type: 'passenger',
+  lat: 32.646625,
+  lng: 51.664761,
+  radius_km: 2,
+  limit: 50,
+  filter_vehicle_types: [1, 2, 3]
+}));
+
+// Sender — find nearby drivers (Redis GEO)
+ws.send(JSON.stringify({
+  type: 'sender',
+  lat: 32.646625,
+  lng: 51.664761,
+  radius_km: 20,
+  limit: 100
+}));
+```
+
+**Structured JSON** (recommended for new clients):
+
+```js
+ws.send(JSON.stringify({
+  type: 'SUBSCRIBE_LOCATION',
+  data: {
+    lat: 32.646625,
+    lng: 51.664761,
+    role: 'sender',       // "passenger" | "sender"
+    radius_km: 20,
+    limit: 100
+  }
+}));
+
+// Keep-alive
+ws.send(JSON.stringify({ type: 'PING' }));
+// → { "type": "PONG", "timestamp_ms": ... }
 ```
 
 **Query-string bootstrap** (single lookup on connect):
 
 ```
-/ws/shipments/nearby?type=passenger&lat=35.6892&lng=51.3890&radius_km=2
+/ws/shipments/nearby?type=sender&lat=32.646625&lng=51.664761&radius_km=20
 ```
 
-**Example `shipment.nearby` response:**
+#### Responses
+
+**`shipment.nearby`** (passenger):
 
 ```json
 {
   "type": "shipment.nearby",
   "timestamp_ms": 1779100000000,
-  "query": { "lat": 35.6892, "lng": 51.389, "radius_km": 2, "limit": 100 },
+  "query": { "lat": 32.646625, "lng": 51.664761, "radius_km": 2, "limit": 100 },
   "count": 1,
   "shipments": [
     {
       "id": 42,
-      "start_lat": 35.69,
-      "start_lng": 51.39,
-      "destination_lat": 35.80,
-      "destination_lng": 51.43,
+      "start_lat": 32.65,
+      "start_lng": 51.67,
+      "destination_lat": 32.80,
+      "destination_lng": 51.75,
       "distance_km": 0.12,
       "content_image": "https://...",
-      "images": ["path/to/image1.jpg", "path/to/image2.jpg"],
+      "images": ["path/to/image1.jpg"],
       "vehicles": [{ "id": 1, "label": "car", "title": "سواری" }]
     }
   ]
 }
 ```
+
+**`driver.nearby`** (sender):
+
+```json
+{
+  "type": "driver.nearby",
+  "timestamp_ms": 1781681527304,
+  "query": { "lat": 32.646625, "lng": 51.664761, "radius_km": 20, "limit": 100 },
+  "count": 1,
+  "drivers": [
+    {
+      "id": "27",
+      "driver_id": 27,
+      "lat": 32.646625,
+      "lng": 51.664761,
+      "timestamp_ms": 1781681806750,
+      "distance_km": 0.0001,
+      "trips": []
+    }
+  ]
+}
+```
+
+Driver positions come from Redis GEO (`DRIVER_GEO_KEY`). Each driver hash expires after **2 minutes** unless refreshed by `POST /driver-location` or `sim-drivers`.
+
+#### WebSocket errors
+
+```json
+{
+  "type": "error",
+  "code": "VALIDATION_ERROR",
+  "message": "...",
+  "timestamp_ms": 1779100000000
+}
+```
+
+Common codes: `UNAUTHORIZED`, `RATE_LIMITED`, `PAYLOAD_TOO_LARGE`, `DRIVER_LOCATION_DISABLED`, `SHIPMENT_SEARCH_DISABLED`.
 
 Only an allowlisted set of shipment columns is selected — no `SELECT *`.
 
@@ -481,6 +607,84 @@ See [`.env.example`](.env.example) for a copy-paste template.
 | `DEVIATION_THRESH_KM` | `0.05` | Cross-track deviation alert threshold |
 | `DRIVER_GEO_KEY` | `drivers:geo` | Redis GEO key for drivers |
 | `DRIVER_SEARCH_RADIUS_KM` | `20` | Sender-mode driver search radius |
+
+### WebSocket security (`/ws/shipments/nearby`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WS_SHIPMENT_AUTH_REQUIRED` | `true` | Require JWT/API key on upgrade |
+| `WS_SHIPMENT_REQUIRE_TLS` | `false` | Reject non-WSS handshakes |
+| `WS_SHIPMENT_LEGACY_FORMAT` | `true` | Accept flat `{type,lat,lng}` messages |
+| `WS_SHIPMENT_MAX_PER_IP` | `10` | Max concurrent connections per client IP |
+| `WS_SHIPMENT_MESSAGES_PER_SEC` | `2` | Per-connection message rate limit |
+| `WS_SHIPMENT_MESSAGE_BURST` | `5` | Token-bucket burst size |
+| `WS_SHIPMENT_IDLE_TIMEOUT_SEC` | `90` | Disconnect idle clients |
+| `WS_SHIPMENT_PING_INTERVAL_SEC` | `30` | Server WebSocket ping interval |
+| `WEBSOCKET_AUTH_ENABLED` | `false` | Require auth on `/ws/trip/:id` |
+
+---
+
+## Local Simulators
+
+Docker Compose profile `sim` provides two CLI tools for local end-to-end testing.
+
+### Start
+
+```bash
+docker compose --profile sim up -d --build sim-drivers sim-passenger
+```
+
+| Service | What it does |
+|---------|----------------|
+| **sim-drivers** | Seeds and updates driver positions in Redis GEO (`drivers:geo`) |
+| **sim-passenger** | Posts GPS fixes to `POST /gps/update` along a fixed Isfahan route |
+
+### `sim-drivers`
+
+Updates Redis only when a driver moves at least `-min-move-m` meters (default 10 m). Re-publishes idle drivers every `-keepalive-sec` (default 90 s) so the **2-minute** location hash TTL does not expire.
+
+Default in `docker-compose.yml`:
+
+| Flag | Value | Meaning |
+|------|-------|---------|
+| `-count` | `1` | One simulated driver |
+| `-id-start` | `27` | Redis member / driver id `27` |
+| `-anchor-lat` / `-anchor-lng` | Isfahan test point | Initial position for first driver |
+| `-reset-geo` | on | Clear GEO key before seeding |
+
+```bash
+# Run outside Docker
+go run ./cmd/sim-drivers -redis localhost:6379 -count 1 -id-start=27 \
+  -anchor-lat=32.646625 -anchor-lng=51.664761 -reset-geo
+```
+
+### `sim-passenger`
+
+Moves along **start → pickup → destination** waypoints and loops forever.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `-trip` | `4` | Laravel `trips.id` |
+| `-tick` | `4s` | Interval between GPS posts (≥ `GPS_RATE_LIMIT_MS`) |
+| `-speed-kmh` | `45` | Simulated speed |
+
+Requires `JWT_AUTH_ENABLED=false` **or** a valid `-api-key` / `-jwt` when auth is enabled.
+
+```bash
+go run ./cmd/sim-passenger -base http://localhost:8080 -trip 4
+```
+
+### Quick WebSocket test (sender / drivers)
+
+```bash
+python tools/test_nearby_ws.py 20 100
+```
+
+Or connect manually and send:
+
+```json
+{"type":"sender","lat":32.646625,"lng":51.664761,"radius_km":20}
+```
 
 ---
 
@@ -612,6 +816,8 @@ make loadtest
 ```
 cmd/
   server/           HTTP entry point, dependency wiring
+  sim-drivers/      Redis GEO driver location simulator
+  sim-passenger/    Trip GPS update simulator (/gps/update)
   osm2postgis/      OSM PBF/XML → PostGIS road_segments
   osm2stations/     OSM → rail_stations
   osm2transit/      OSM → transit overlay (Iranian cities)
@@ -632,10 +838,28 @@ internal/
   service/          Shipment search, driver location
   storage/          PostGIS repos, shipment DB, batch writer, migrations
   utils/            Haversine, polyline, cross-track distance, EMA
-  ws/               WebSocket hub and per-connection clients
+  ws/               Trip WebSocket hub and per-connection clients
+  wsnearby/         Nearby shipment WebSocket protocol + session
+  wsplatform/       Shared WS metrics, logging helpers, location guard
 
-docs/               Auto-generated Swagger (make swag)
+tools/              test_nearby_ws.py and other dev utilities
+docs/               Persian guide (README.fa.md) + Swagger (make swag)
 ```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `401 UNAUTHORIZED` on HTTP/WS | JWT invalid or `JWT_SECRET` mismatch | Match Laravel `JWT_SECRET`; or disable auth in dev (see WebSocket Guide) |
+| `driver.nearby` → `count: 0` | No live drivers in Redis GEO | Run `docker compose --profile sim up -d sim-drivers` |
+| `count: 0` but GEO has members | Driver hash TTL expired (2 min) | Keep `sim-drivers` running; it refreshes via keepalive |
+| `SHIPMENT_SEARCH_DISABLED` | `SHIPMENT_DB_DSN` empty | Set Laravel read-only DSN in `.env` |
+| WebSocket closes immediately | Origin not allowed | Set `CORS_ALLOWED_ORIGINS` to your frontend URL |
+| `gps/update` fails with 401 | Auth enabled without token | `JWT_AUTH_ENABLED=false` in dev or pass `-api-key` to sim-passenger |
+| Routing `503` | Road graph not loaded | Run `osm2postgis` or start OSRM profile |
+| Reverb/Pusher URL does not work | Wrong service | Laravel Reverb ≠ geo-service; use port **8080** and paths above |
 
 ---
 
