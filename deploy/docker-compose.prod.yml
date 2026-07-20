@@ -1,0 +1,81 @@
+# Production stack for MrchamedonBeta server.
+# Uses the shared Docker network `mrchamedon-network` (same as Laravel + frontend).
+#
+# Usage (from repo root on server):
+#   cp deploy/.env.production.example .env
+#   nano .env
+#   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build
+#
+# With OSRM (after one-time map preprocessing in ./data):
+#   COMPOSE_PROFILES=osrm docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: mrchamedon-geo-redis
+    restart: unless-stopped
+    networks:
+      - mrchamedon-network
+    volumes:
+      - geo_redis_data:/data
+    command: >
+      redis-server
+        --appendonly yes
+        --maxmemory 1gb
+        --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  geo-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: mrchamedon-geo-service
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - ../.env
+    environment:
+      PORT: "8080"
+      GIN_MODE: "release"
+      REDIS_ADDR: "mrchamedon-geo-redis:6379"
+      OSRM_BASE_URL: "http://mrchamedon-osrm:5000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - mrchamedon-network
+
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: mrchamedon-osrm
+    restart: unless-stopped
+    profiles:
+      - osrm
+    volumes:
+      - ../data:/data
+    command: >
+      osrm-routed
+        --algorithm=MLD
+        --max-table-size=10000
+        --max-matching-size=100
+        /data/map.osrm
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - mrchamedon-network
+
+networks:
+  mrchamedon-network:
+    external: true
+
+volumes:
+  geo_redis_data:
