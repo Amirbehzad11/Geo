@@ -42,6 +42,12 @@ func Auth(opts AuthOptions) gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
+		// Public probes must stay unauthenticated for Docker/nginx health checks.
+		if c.Request.URL.Path == "/health" {
+			c.Next()
+			return
+		}
+
 		if len(expectedAPIKey) > 0 {
 			provided := []byte(c.GetHeader("X-API-Key"))
 			if subtle.ConstantTimeCompare(provided, expectedAPIKey) == 1 {

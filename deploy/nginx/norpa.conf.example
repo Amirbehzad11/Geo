@@ -1,13 +1,16 @@
-# Add this file to the frontend gateway nginx conf.d directory on the server:
-#   /var/www/mrchamedonBetaFront/MrChamedonBetaFrontend/nginx/conf.d/geo.conf
+# Gateway config for Go geo-service on domain: norpa.ir
+# Copy to:
+#   /var/www/mrchamedonBetaFront/mrchamedonBeta_front/nginx/conf.d/norpa.conf
 #
-# DNS: create an A record  geo.nurpa.ir  -> server IP
-# SSL: use the same certbot flow as other nurpa.ir vhosts.
+# Domains:
+#   nurpa.ir           → frontend
+#   testmrchamedon.ir  → Laravel backend
+#   norpa.ir           → geo-service (this file)
 
 server {
     listen 80;
     listen [::]:80;
-    server_name geo.norpa.ir;
+    server_name norpa.ir www.norpa.ir;
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -21,10 +24,10 @@ server {
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    server_name geo.norpa.ir;
+    server_name norpa.ir www.norpa.ir;
 
-    ssl_certificate     /etc/letsencrypt/live/geo.norpa.ir/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/geo.norpa.ir/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/norpa.ir/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/norpa.ir/privkey.pem;
 
     location / {
         proxy_pass http://mrchamedon-geo-service:8080;
@@ -34,6 +37,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
 
+        # WebSocket
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 3600s;

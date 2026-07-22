@@ -11,7 +11,9 @@
 
 services:
   redis:
-    image: redis:7-alpine
+    # Use redis:alpine — same tag as MrchamedonBeta stack; usually already cached on server.
+    # Avoids Docker Hub 403/rate-limit issues with redis:7-alpine on some hosts.
+    image: redis:alpine
     container_name: mrchamedon-geo-redis
     restart: unless-stopped
     networks:

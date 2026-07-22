@@ -23,7 +23,27 @@ echo "Building and starting geo-service stack..."
 docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build
 
 echo ""
-echo "Health check (from host):"
+echo "Waiting for geo-service to start..."
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if docker exec mrchamedon-geo-service wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1; then
+    echo "Health check OK (attempt $i)"
+    docker exec mrchamedon-geo-service wget -qO- http://127.0.0.1:8080/health || true
+    break
+  fi
+  if [[ $i -eq 10 ]]; then
+    echo "Health check failed after 10 attempts — showing logs:"
+    docker logs mrchamedon-geo-service --tail 40
+    echo ""
+    echo "Common fixes:"
+    echo "  - Set JWT_SECRET in .env (must match Laravel, not empty/CHANGE_ME)"
+    echo "  - Set SHIPMENT_DB_DSN with mrchamedon-postgres hostname"
+    exit 1
+  fi
+  sleep 2
+done
+
+echo ""
+echo "Gateway health check (from nginx container):"
 docker exec mrchamedon-gateway-nginx wget -qO- http://mrchamedon-geo-service:8080/health || true
 
 echo ""

@@ -47,7 +47,7 @@ type DriverLocation struct {
 	Lng         float64          `json:"lng"`
 	TimestampMs int64            `json:"timestamp_ms"`
 	DistanceKm  float64          `json:"distance_km,omitempty"`
-	Trips       []map[string]any `json:"trips,omitempty"`
+	Trips       []map[string]any `json:"trips"`
 }
 
 type DriverLocationResponse struct {
