@@ -43,7 +43,9 @@ func Auth(opts AuthOptions) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		// Public probes must stay unauthenticated for Docker/nginx health checks.
-		if c.Request.URL.Path == "/health" {
+		// WebSocket routes authenticate themselves (JWT subprotocol / query / optional).
+		path := c.Request.URL.Path
+		if path == "/health" || strings.HasPrefix(path, "/ws/") {
 			c.Next()
 			return
 		}

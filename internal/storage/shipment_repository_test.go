@@ -12,9 +12,9 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 		dialect:           "postgres",
 		table:             `"public"."shipments"`,
 		idColumn:          `"id"`,
-		vehicleAllowedCol: `"vehicle_allowed"`,
 		visibleOnMapCol:   `"visible_on_map"`,
 		shipmentCodeCol:   `"shipment_code"`,
+		shippingTypeIDCol: `"shipping_type_id"`,
 		locationColumn:    `"start_location"`,
 	}
 
@@ -44,11 +44,17 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	if !strings.Contains(query, `AS distance_km`) {
 		t.Fatalf("expected distance_km alias, got:\n%s", query)
 	}
+	if !strings.Contains(query, `NULL AS vehicle_allowed`) {
+		t.Fatalf("expected NULL vehicle_allowed when column is unset, got:\n%s", query)
+	}
 	if !strings.Contains(query, `AS visible_on_map`) {
 		t.Fatalf("expected visible_on_map column in PostGIS query, got:\n%s", query)
 	}
 	if !strings.Contains(query, `AS shipment_code`) {
 		t.Fatalf("expected shipment_code column in PostGIS query, got:\n%s", query)
+	}
+	if !strings.Contains(query, `s."shipping_type_id" AS shipping_type_id`) {
+		t.Fatalf("expected shipping_type_id column in PostGIS query, got:\n%s", query)
 	}
 	// LIMIT uses positional placeholder
 	if !strings.Contains(query, "LIMIT $4") {
@@ -73,9 +79,7 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	}
 }
 
-// TestShipmentNearbyQueryPostGISWithEndLocation checks that end_lat/end_lng
-// columns are added when endLocationColumn is set.
-func TestShipmentNearbyQueryPostGISWithEndLocation(t *testing.T) {
+func TestShipmentNearbyQueryPostGISWithVehicleAllowed(t *testing.T) {
 	db := &ShipmentDB{
 		dialect:           "postgres",
 		table:             `"shipments"`,
@@ -83,6 +87,25 @@ func TestShipmentNearbyQueryPostGISWithEndLocation(t *testing.T) {
 		vehicleAllowedCol: `"vehicle_allowed"`,
 		visibleOnMapCol:   `"visible_on_map"`,
 		shipmentCodeCol:   `"shipment_code"`,
+		shippingTypeIDCol: `"shipping_type_id"`,
+		locationColumn:    `"start_location"`,
+	}
+	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50)
+	if !strings.Contains(query, `s."vehicle_allowed" AS vehicle_allowed`) {
+		t.Fatalf("expected vehicle_allowed column when configured, got:\n%s", query)
+	}
+}
+
+// TestShipmentNearbyQueryPostGISWithEndLocation checks that end_lat/end_lng
+// columns are added when endLocationColumn is set.
+func TestShipmentNearbyQueryPostGISWithEndLocation(t *testing.T) {
+	db := &ShipmentDB{
+		dialect:           "postgres",
+		table:             `"shipments"`,
+		idColumn:          `"id"`,
+		visibleOnMapCol:   `"visible_on_map"`,
+		shipmentCodeCol:   `"shipment_code"`,
+		shippingTypeIDCol: `"shipping_type_id"`,
 		locationColumn:    `"start_location"`,
 		endLocationColumn: `"end_location"`,
 	}
@@ -102,9 +125,9 @@ func TestShipmentNearbyQueryPostGISWithImages(t *testing.T) {
 		dialect:              "postgres",
 		table:                `"shipments"`,
 		idColumn:             `"id"`,
-		vehicleAllowedCol:    `"vehicle_allowed"`,
 		visibleOnMapCol:      `"visible_on_map"`,
-		shipmentCodeCol:        `"shipment_code"`,
+		shipmentCodeCol:      `"shipment_code"`,
+		shippingTypeIDCol:    `"shipping_type_id"`,
 		locationColumn:       `"start_location"`,
 		shipmentImagesSelect: buildShipmentImagesSelect("postgres", `"shipment_images"`, `"shipment_id"`, `"image"`, `"id"`, `"id"`),
 	}
@@ -126,14 +149,14 @@ func TestShipmentNearbyQueryPostGISWithImages(t *testing.T) {
 // works correctly for MySQL (separate float lat/lng columns).
 func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	db := &ShipmentDB{
-		dialect:         "mysql",
-		table:           "`shipment`",
-		idColumn:        "`id`",
-		vehicleAllowedCol: "`vehicle_allowed`",
+		dialect:           "mysql",
+		table:             "`shipment`",
+		idColumn:          "`id`",
 		visibleOnMapCol:   "`visible_on_map`",
 		shipmentCodeCol:   "`shipment_code`",
-		latColumn:       "`origin_lat`",
-		lngColumn:       "`origin_lng`",
+		shippingTypeIDCol: "`shipping_type_id`",
+		latColumn:         "`origin_lat`",
+		lngColumn:         "`origin_lng`",
 	}
 
 	query, args := db.buildNearbyQuery(35.7, 51.4, 10, 25)
@@ -152,6 +175,9 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	}
 	if !strings.Contains(query, "AS shipment_code") {
 		t.Fatalf("expected shipment_code column in MySQL query, got:\n%s", query)
+	}
+	if !strings.Contains(query, "AS shipping_type_id") {
+		t.Fatalf("expected shipping_type_id column in MySQL query, got:\n%s", query)
 	}
 	if len(args) != 9 {
 		t.Fatalf("expected 9 args, got %d", len(args))

@@ -43,6 +43,10 @@ type ShipmentDBConfig struct {
 	LatColumn string
 	LngColumn string
 
+	// Optional JSON/array column listing allowed vehicle type IDs (e.g. "vehicle_allowed").
+	// Leave empty when the Laravel schema has no such column — SELECT uses NULL.
+	VehicleAllowedColumn string
+
 	// Vehicle box sizes + types (optional).
 	// When VehicleBoxSizesTable is set, LoadVehicleBoxSizes JOINs vehicle_types
 	// to attach a human-readable title to each vehicle entry.
@@ -75,6 +79,7 @@ type ShipmentDB struct {
 	vehicleAllowedCol string // quoted vehicle_allowed column used for filtering/enrichment
 	visibleOnMapCol   string // quoted visible_on_map column for map display
 	shipmentCodeCol   string // quoted shipment_code column
+	shippingTypeIDCol string // quoted shipping_type_id column
 	locationColumn    string // quoted PostGIS geometry column
 	endLocationColumn string // quoted destination geometry column (optional)
 	latColumn         string // quoted flat lat column (legacy / MySQL)
@@ -276,10 +281,14 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		db.Close()
 		return nil, fmt.Errorf("shipment id column: %w", err)
 	}
-	vehicleAllowedCol, err := quoteIdentifier(dialect, "vehicle_allowed")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("shipment vehicle_allowed column: %w", err)
+	// vehicle_allowed is optional — Laravel MrchamedonBeta has no such column.
+	var vehicleAllowedCol string
+	if col := strings.TrimSpace(cfg.VehicleAllowedColumn); col != "" {
+		vehicleAllowedCol, err = quoteIdentifier(dialect, col)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("shipment vehicle_allowed column: %w", err)
+		}
 	}
 	visibleOnMapCol, err := quoteIdentifier(dialect, "visible_on_map")
 	if err != nil {
@@ -291,6 +300,11 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		db.Close()
 		return nil, fmt.Errorf("shipment shipment_code column: %w", err)
 	}
+	shippingTypeIDCol, err := quoteIdentifier(dialect, "shipping_type_id")
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("shipment shipping_type_id column: %w", err)
+	}
 
 	return &ShipmentDB{
 		db:                     db,
@@ -300,6 +314,7 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		vehicleAllowedCol:      vehicleAllowedCol,
 		visibleOnMapCol:        visibleOnMapCol,
 		shipmentCodeCol:        shipmentCodeCol,
+		shippingTypeIDCol:      shippingTypeIDCol,
 		locationColumn:         locationColumn,
 		endLocationColumn:      endLocationColumn,
 		latColumn:              latColumn,
@@ -627,9 +642,10 @@ func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit i
 
 	query := fmt.Sprintf(`
 SELECT s.%[8]s AS id,
-    s.%[9]s AS vehicle_allowed,
+    %[9]s AS vehicle_allowed,
     s.%[11]s AS visible_on_map,
     s.%[12]s AS shipment_code,
+    s.%[13]s AS shipping_type_id,
     ST_Y(%[1]s::geometry)::float8 AS start_lat,
     ST_X(%[1]s::geometry)::float8 AS start_lng%[2]s,
     ST_Distance(%[1]s::geography, ST_MakePoint($2, $1)::geography) / 1000.0 AS distance_km%[4]s%[10]s
@@ -647,10 +663,11 @@ LIMIT $4`,
 		lastStatusCol,
 		nearbyShipmentStatusID,
 		s.idColumn,
-		s.vehicleAllowedCol,
+		s.vehicleAllowedSelectExpr(),
 		s.shipmentImagesSelect,
 		s.visibleOnMapCol,
 		s.shipmentCodeCol,
+		s.shippingTypeIDCol,
 	)
 
 	return query, args
@@ -720,9 +737,10 @@ func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit
 SELECT *
 FROM (
     SELECT s.%s AS id,
-        s.%s AS vehicle_allowed,
+        %s AS vehicle_allowed,
         s.%s AS visible_on_map,
         s.%s AS shipment_code,
+        s.%s AS shipping_type_id,
         %s AS start_lat,
         %s AS start_lng,
         %s AS distance_km%s%s
@@ -737,9 +755,10 @@ WHERE distance_km <= %s
 ORDER BY distance_km ASC
 LIMIT %s`,
 		s.idColumn,
-		s.vehicleAllowedCol,
+		s.vehicleAllowedSelectExpr(),
 		s.visibleOnMapCol,
 		s.shipmentCodeCol,
+		s.shippingTypeIDCol,
 		latRef,
 		lngRef,
 		distanceExpr,
@@ -762,6 +781,16 @@ LIMIT %s`,
 	)
 
 	return query, args.Values()
+}
+
+// vehicleAllowedSelectExpr returns the SQL expression for vehicle_allowed.
+// When the column is not configured (Laravel schema), NULL is selected so the
+// nearby query does not fail with "column does not exist".
+func (s *ShipmentDB) vehicleAllowedSelectExpr() string {
+	if s == nil || strings.TrimSpace(s.vehicleAllowedCol) == "" {
+		return "NULL"
+	}
+	return "s." + s.vehicleAllowedCol
 }
 
 func shipmentLastStatusColumn(dialect string) string {

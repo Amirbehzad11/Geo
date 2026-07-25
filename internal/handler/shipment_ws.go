@@ -196,7 +196,7 @@ func (h *ShipmentWSHandler) process(session *wsnearby.Session, parent context.Co
 			return
 		}
 		slog.Warn("nearby shipment search failed", "err", err)
-		session.WriteError("SHIPMENT_SEARCH_FAILED", "shipment search failed")
+			session.WriteError("SHIPMENT_SEARCH_FAILED", "shipment search failed")
 		return
 	}
 	session.WriteJSON(result)
