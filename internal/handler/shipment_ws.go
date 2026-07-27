@@ -189,7 +189,7 @@ func (h *ShipmentWSHandler) process(session *wsnearby.Session, parent context.Co
 		return
 	}
 
-	result, err := h.svc.SearchNearby(ctx, req)
+	result, err := h.svc.SearchNearby(ctx, req, session.UserID())
 	if err != nil {
 		if errors.Is(err, service.ErrShipmentSearchDisabled) {
 			session.WriteError("SHIPMENT_SEARCH_DISABLED", err.Error())

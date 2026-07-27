@@ -4,9 +4,150 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"geo-service/internal/model"
 )
 
 var excludedShippingStatusLabels = []string{"CANCELED", "DELIVERED"}
+
+// FindLatestActiveShippingDestinationsByUserIDs returns destination, trip_id,
+// vehicle_type_id, and vehicle_type_image of the latest in-progress shipping
+// for each driver (trips.user_id).
+// Active = shipping_statuses.label NOT IN (CANCELED, DELIVERED).
+// Name prefers shipment end city title, then end_address.
+func (s *ShipmentDB) FindLatestActiveShippingDestinationsByUserIDs(ctx context.Context, userIDs []int64) (map[int64]model.DriverActiveJob, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("shipment db is not configured")
+	}
+	if len(userIDs) == 0 {
+		return map[int64]model.DriverActiveJob{}, nil
+	}
+
+	args := newPlaceholderArgs(s.dialect)
+	placeholders := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		placeholders = append(placeholders, args.Add(id))
+	}
+
+	query := buildLatestActiveShippingDestinationsQuery(s, placeholders)
+	rows, err := s.db.QueryContext(ctx, query, args.Values()...)
+	if err != nil {
+		return nil, fmt.Errorf("active shipping destinations by user_ids: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanShipmentRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[int64]model.DriverActiveJob, len(items))
+	for _, item := range items {
+		userID := anyToInt64(item["user_id"])
+		tripID := anyToInt64(item["trip_id"])
+		if userID <= 0 || tripID <= 0 {
+			continue
+		}
+		name := strings.TrimSpace(anyToString(item["destination"]))
+		if name == "" {
+			continue
+		}
+		out[userID] = model.DriverActiveJob{
+			Destination:      name,
+			TripID:           tripID,
+			VehicleTypeID:    anyToInt64(item["vehicle_type_id"]),
+			VehicleTypeImage: ResolvePublicMediaURL(s.mediaPublicBaseURL, anyToString(item["vehicle_type_image"])),
+		}
+	}
+	return out, nil
+}
+
+func buildLatestActiveShippingDestinationsQuery(s *ShipmentDB, placeholders []string) string {
+	excluded := "'" + strings.Join(excludedShippingStatusLabels, "','") + "'"
+	shippingsTable := quotedTable(s.dialect, "shippings")
+	statusesTable := quotedTable(s.dialect, "shipping_statuses")
+	tripsTable := quotedTable(s.dialect, "trips")
+	citiesTable := quotedTable(s.dialect, "cities")
+	vehicleTypesTable := quotedTable(s.dialect, "vehicle_types")
+	shipmentsTable := s.table
+	if strings.TrimSpace(shipmentsTable) == "" {
+		shipmentsTable = quotedTable(s.dialect, "shipments")
+	}
+	inList := strings.Join(placeholders, ", ")
+
+	if s.dialect == "postgres" {
+		return fmt.Sprintf(`
+SELECT DISTINCT ON (t."user_id")
+    t."user_id" AS user_id,
+    sh."trip_id" AS trip_id,
+    t."vehicle_type_id" AS vehicle_type_id,
+    COALESCE(vt."image", '') AS vehicle_type_image,
+    COALESCE(
+        NULLIF(TRIM(eci."title"), ''),
+        NULLIF(TRIM(sm."end_address"), ''),
+        ''
+    ) AS destination
+FROM %s AS sh
+JOIN %s AS ss ON ss."id" = sh."last_status_id"
+JOIN %s AS t ON t."id" = sh."trip_id"
+JOIN %s AS sm ON sm."id" = sh."shipment_id"
+LEFT JOIN %s AS eci ON eci."id" = sm."end_city_id"
+LEFT JOIN %s AS vt ON vt."id" = t."vehicle_type_id"
+WHERE t."user_id" IN (%s)
+  AND UPPER(ss."label") NOT IN (%s)
+ORDER BY t."user_id" ASC, sh."id" DESC`,
+			shippingsTable,
+			statusesTable,
+			tripsTable,
+			shipmentsTable,
+			citiesTable,
+			vehicleTypesTable,
+			inList,
+			excluded,
+		)
+	}
+
+	return fmt.Sprintf(`
+SELECT
+    t.user_id AS user_id,
+    sh.trip_id AS trip_id,
+    t.vehicle_type_id AS vehicle_type_id,
+    COALESCE(vt.image, '') AS vehicle_type_image,
+    COALESCE(
+        NULLIF(TRIM(eci.title), ''),
+        NULLIF(TRIM(sm.end_address), ''),
+        ''
+    ) AS destination
+FROM %s AS sh
+JOIN %s AS ss ON ss.id = sh.last_status_id
+JOIN %s AS t ON t.id = sh.trip_id
+JOIN %s AS sm ON sm.id = sh.shipment_id
+LEFT JOIN %s AS eci ON eci.id = sm.end_city_id
+LEFT JOIN %s AS vt ON vt.id = t.vehicle_type_id
+WHERE t.user_id IN (%s)
+  AND UPPER(ss.label) NOT IN (%s)
+  AND sh.id = (
+      SELECT MAX(sh2.id)
+      FROM %s AS sh2
+      JOIN %s AS ss2 ON ss2.id = sh2.last_status_id
+      JOIN %s AS t2 ON t2.id = sh2.trip_id
+      WHERE t2.user_id = t.user_id
+        AND UPPER(ss2.label) NOT IN (%s)
+  )`,
+		shippingsTable,
+		statusesTable,
+		tripsTable,
+		shipmentsTable,
+		citiesTable,
+		vehicleTypesTable,
+		inList,
+		excluded,
+		shippingsTable,
+		statusesTable,
+		tripsTable,
+		excluded,
+	)
+}
 
 // LoadShippingsByShipmentIDs returns the latest active shipping per shipment.
 // Shippings whose shipping_statuses.label is CANCELED or DELIVERED are omitted.

@@ -19,21 +19,21 @@ var (
 
 const defaultDriverSearchRadiusKm = 20.0
 
-// TripRepository loads Laravel trips for nearby driver enrichment.
-type TripRepository interface {
-	FindTripsByUserIDs(ctx context.Context, userIDs []int64) (map[int64][]map[string]any, error)
+// DriverShippingRepository loads the latest in-progress shipping job per driver.
+type DriverShippingRepository interface {
+	FindLatestActiveShippingDestinationsByUserIDs(ctx context.Context, userIDs []int64) (map[int64]model.DriverActiveJob, error)
 }
 
 type DriverService struct {
 	redis           *cache.Redis
-	trips           TripRepository
+	shippings       DriverShippingRepository
 	geoKey          string
 	streamKey       string
 	defaultRadiusKm float64
 	defaultLimit    int
 }
 
-func NewDriverService(redis *cache.Redis, geoKey, streamKey string, defaultRadiusKm float64, defaultLimit int, trips TripRepository) *DriverService {
+func NewDriverService(redis *cache.Redis, geoKey, streamKey string, defaultRadiusKm float64, defaultLimit int, shippings DriverShippingRepository) *DriverService {
 	if defaultRadiusKm <= 0 {
 		defaultRadiusKm = defaultDriverSearchRadiusKm
 	}
@@ -46,7 +46,7 @@ func NewDriverService(redis *cache.Redis, geoKey, streamKey string, defaultRadiu
 
 	return &DriverService{
 		redis:           redis,
-		trips:           trips,
+		shippings:       shippings,
 		geoKey:          strings.TrimSpace(geoKey),
 		streamKey:       strings.TrimSpace(streamKey),
 		defaultRadiusKm: defaultRadiusKm,
@@ -123,14 +123,14 @@ func (s *DriverService) SearchNearby(ctx context.Context, lat, lng, radiusKm flo
 			Lng:         state.Lng,
 			TimestampMs: state.TimestampMs,
 			DistanceKm:  state.DistanceKm,
-			Trips:       []map[string]any{},
+			Active:      nil,
 		}
 		if ok {
 			driver.DriverID = driverID
 		}
 		drivers = append(drivers, driver)
 	}
-	s.attachTrips(ctx, drivers)
+	s.attachActiveShippings(ctx, drivers)
 
 	return &model.NearbyDriverResponse{
 		Type:      "driver.nearby",
@@ -146,8 +146,8 @@ func (s *DriverService) SearchNearby(ctx context.Context, lat, lng, radiusKm flo
 	}, nil
 }
 
-func (s *DriverService) attachTrips(ctx context.Context, drivers []model.DriverLocation) {
-	if s == nil || s.trips == nil || len(drivers) == 0 {
+func (s *DriverService) attachActiveShippings(ctx context.Context, drivers []model.DriverLocation) {
+	if s == nil || s.shippings == nil || len(drivers) == 0 {
 		return
 	}
 
@@ -167,17 +167,18 @@ func (s *DriverService) attachTrips(ctx context.Context, drivers []model.DriverL
 		return
 	}
 
-	byUser, err := s.trips.FindTripsByUserIDs(ctx, userIDs)
+	byUser, err := s.shippings.FindLatestActiveShippingDestinationsByUserIDs(ctx, userIDs)
 	if err != nil {
-		slog.Warn("nearby driver trip enrichment failed", "err", err)
+		slog.Warn("nearby driver shipping enrichment failed", "err", err)
 		return
 	}
 	for i := range drivers {
 		if drivers[i].DriverID <= 0 {
 			continue
 		}
-		if trips, ok := byUser[drivers[i].DriverID]; ok {
-			drivers[i].Trips = trips
+		if job, ok := byUser[drivers[i].DriverID]; ok {
+			active := job
+			drivers[i].Active = &active
 		}
 	}
 }

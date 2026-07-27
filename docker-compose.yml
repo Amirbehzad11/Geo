@@ -174,6 +174,9 @@ services:
       SHIPMENT_IMAGE_SHIPMENT_ID_COLUMN:  "shipment_id"
       SHIPMENT_IMAGE_COLUMN:              "image"
 
+      # Laravel APP_URL for absolute media links (/storage/...)
+      MEDIA_PUBLIC_BASE_URL: "${MEDIA_PUBLIC_BASE_URL:-}"
+
       # Driver location search
       DRIVER_GEO_KEY:              "drivers:geo"
       DRIVER_LOCATION_STREAM_KEY:  "driver:locations:stream"

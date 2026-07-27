@@ -40,6 +40,14 @@ type DriverLocationRequest struct {
 	TimestampMs int64    `json:"timestamp_ms,omitempty"`
 }
 
+// DriverActiveJob is the latest in-progress shipping for a nearby driver.
+type DriverActiveJob struct {
+	Destination      string `json:"destination"`
+	TripID           int64  `json:"trip_id"`
+	VehicleTypeID    int64  `json:"vehicle_type_id"`
+	VehicleTypeImage string `json:"vehicle_type_image,omitempty"`
+}
+
 type DriverLocation struct {
 	ID          string           `json:"id"`
 	DriverID    int64            `json:"driver_id,omitempty"`
@@ -47,7 +55,7 @@ type DriverLocation struct {
 	Lng         float64          `json:"lng"`
 	TimestampMs int64            `json:"timestamp_ms"`
 	DistanceKm  float64          `json:"distance_km,omitempty"`
-	Trips       []map[string]any `json:"trips"`
+	Active      *DriverActiveJob `json:"active"`
 }
 
 type DriverLocationResponse struct {

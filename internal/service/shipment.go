@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -39,6 +40,11 @@ type VehicleTypeRepository interface {
 	LoadVehicleTypes(ctx context.Context) ([]model.VehicleType, error)
 }
 
+// UserVehicleRepository loads registered vehicles for the authenticated passenger.
+type UserVehicleRepository interface {
+	LoadUserVehiclesByUserID(ctx context.Context, userID int64) ([]model.UserVehicle, error)
+}
+
 // ShipmentService normalises nearby shipment search requests.
 type ShipmentService struct {
 	repo            ShipmentRepository
@@ -71,8 +77,10 @@ func NewShipmentService(repo ShipmentRepository, defaultRadiusKm float64, defaul
 // SearchNearby returns shipments near the passenger.
 //
 // Each shipment gains a "vehicles" field populated from shipment.vehicle_allowed
-// and the configured vehicle_types label/title lookup.
-func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShipmentRequest) (*model.NearbyShipmentResponse, error) {
+// and the configured vehicle_types label/title lookup. Package media paths are
+// split into images/videos. When userID > 0, registered user_vehicles are also
+// attached on the top-level response.
+func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShipmentRequest, userID int64) (*model.NearbyShipmentResponse, error) {
 	if s == nil || s.repo == nil {
 		return nil, ErrShipmentSearchDisabled
 	}
@@ -110,6 +118,7 @@ func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShip
 			continue
 		}
 		row["vehicles"] = buildShipmentVehicles(allowedIDs, vehicleTypes)
+		splitShipmentMedia(row)
 		out = append(out, row)
 	}
 	s.attachShippings(ctx, out)
@@ -123,9 +132,83 @@ func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShip
 			RadiusKm: radiusKm,
 			Limit:    limit,
 		},
-		Count:     len(out),
-		Shipments: out,
+		Count:        len(out),
+		Shipments:    out,
+		UserVehicles: s.loadUserVehicles(ctx, userID),
 	}, nil
+}
+
+func (s *ShipmentService) loadUserVehicles(ctx context.Context, userID int64) []model.UserVehicle {
+	if userID <= 0 {
+		return []model.UserVehicle{}
+	}
+	vr, ok := s.repo.(UserVehicleRepository)
+	if !ok {
+		return []model.UserVehicle{}
+	}
+	vehicles, err := vr.LoadUserVehiclesByUserID(ctx, userID)
+	if err != nil {
+		slog.Warn("nearby user vehicles enrichment failed", "err", err, "user_id", userID)
+		return []model.UserVehicle{}
+	}
+	if vehicles == nil {
+		return []model.UserVehicle{}
+	}
+	return vehicles
+}
+
+func splitShipmentMedia(row map[string]any) {
+	if row == nil {
+		return
+	}
+	paths := mediaPaths(row["images"])
+	images := make([]string, 0, len(paths))
+	videos := make([]string, 0)
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if isVideoPath(path) {
+			videos = append(videos, path)
+			continue
+		}
+		images = append(images, path)
+	}
+	row["images"] = images
+	row["videos"] = videos
+}
+
+func mediaPaths(v any) []string {
+	switch x := v.(type) {
+	case []string:
+		return x
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s := strings.TrimSpace(fmt.Sprint(item)); s != "" && s != "<nil>" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func isVideoPath(path string) bool {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, ".mp4"),
+		strings.HasSuffix(lower, ".mov"),
+		strings.HasSuffix(lower, ".webm"),
+		strings.HasSuffix(lower, ".mkv"),
+		strings.HasSuffix(lower, ".avi"),
+		strings.HasSuffix(lower, ".m4v"):
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *ShipmentService) attachShippings(ctx context.Context, rows []map[string]any) {

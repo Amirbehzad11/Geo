@@ -75,6 +75,10 @@ type Config struct {
 	ShipmentImageShipmentIDColumn string // SHIPMENT_IMAGE_SHIPMENT_ID_COLUMN; default "shipment_id"
 	ShipmentImageColumn           string // SHIPMENT_IMAGE_COLUMN; default "image"
 
+	// MediaPublicBaseURL is Laravel APP_URL (optionally with /storage).
+	// Relative public-disk paths are expanded to absolute URLs for WebSocket clients.
+	MediaPublicBaseURL string // MEDIA_PUBLIC_BASE_URL
+
 	DriverGeoKey            string  // DRIVER_GEO_KEY; Redis GEO key for live driver locations
 	DriverLocationStreamKey string  // DRIVER_LOCATION_STREAM_KEY; Redis stream for async persistence
 	DriverSearchRadiusKm    float64 // DRIVER_SEARCH_RADIUS_KM; default 20
@@ -146,6 +150,8 @@ func Load() *Config {
 		ShipmentImagesTable:           getEnv("SHIPMENT_IMAGES_TABLE", ""),
 		ShipmentImageShipmentIDColumn: getEnv("SHIPMENT_IMAGE_SHIPMENT_ID_COLUMN", "shipment_id"),
 		ShipmentImageColumn:           getEnv("SHIPMENT_IMAGE_COLUMN", "image"),
+
+		MediaPublicBaseURL: getEnv("MEDIA_PUBLIC_BASE_URL", ""),
 
 		DriverGeoKey:            getEnv("DRIVER_GEO_KEY", "drivers:geo"),
 		DriverLocationStreamKey: getEnv("DRIVER_LOCATION_STREAM_KEY", "driver:locations:stream"),

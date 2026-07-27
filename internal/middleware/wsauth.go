@@ -25,6 +25,10 @@ type WSAuthResult struct {
 // or ?token= query parameter.
 func AuthenticateWebSocketUpgrade(r *http.Request, opts WSAuthOptions) (WSAuthResult, bool) {
 	if !opts.RequireAuth {
+		// Best-effort identity for enrichment (e.g. user_vehicles) when a JWT is present.
+		if result, ok := tryWSJWTIdentity(r, opts); ok {
+			return result, true
+		}
 		return WSAuthResult{}, true
 	}
 
@@ -45,6 +49,18 @@ func AuthenticateWebSocketUpgrade(r *http.Request, opts WSAuthOptions) (WSAuthRe
 		return WSAuthResult{Method: authMethodKeyValue}, true
 	}
 
+	result, ok := tryWSJWTIdentity(r, opts)
+	if !ok {
+		return WSAuthResult{}, false
+	}
+	return result, true
+}
+
+func tryWSJWTIdentity(r *http.Request, opts WSAuthOptions) (WSAuthResult, bool) {
+	token := wsBearerToken(r)
+	if token == "" {
+		return WSAuthResult{}, false
+	}
 	secret := strings.TrimSpace(opts.JWTSecret)
 	if secret == "" {
 		return WSAuthResult{}, false

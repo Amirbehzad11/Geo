@@ -19,7 +19,8 @@ import (
 )
 
 const shipmentEarthRadiusKm = 6371.0
-const nearbyShipmentStatusID = 4
+// nearbyShipmentStatusID is Laravel shipment_statuses.id for ACCEPTED (تایید شده).
+const nearbyShipmentStatusID = 5
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -68,6 +69,10 @@ type ShipmentDBConfig struct {
 	ShipmentImagesTable           string // e.g. "shipment_images"; empty = disabled
 	ShipmentImageShipmentIDColumn string // FK column in shipment_images; default "shipment_id"
 	ShipmentImageColumn           string // image path/url column; default "image"
+
+	// MediaPublicBaseURL is Laravel APP_URL (or APP_URL/storage). Relative
+	// storage paths are turned into absolute URLs for the frontend.
+	MediaPublicBaseURL string
 }
 
 // ShipmentDB is a read-only connection to the Laravel database.
@@ -99,6 +104,12 @@ type ShipmentDB struct {
 
 	// prebuilt SQL snippet for shipment_images aggregation (empty = disabled)
 	shipmentImagesSelect string // adds images JSON array
+
+	// package/content detail columns + joins always used by nearby passenger
+	packageDetailSelect string
+	packageDetailJoins  string
+
+	mediaPublicBaseURL string
 }
 
 // NewShipmentDB opens a direct DB connection for nearby shipment search.
@@ -223,10 +234,22 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		if err != nil {
 			return nil, fmt.Errorf("content_types image column: %w", err)
 		}
+		ctTitle, err := quoteIdentifier(dialect, "title")
+		if err != nil {
+			return nil, fmt.Errorf("content_types title column: %w", err)
+		}
 		ctPK, _ := quoteIdentifier(dialect, "id")
 		contentJoin = fmt.Sprintf("LEFT JOIN %s AS ct ON ct.%s = s.%s", ctTable, ctPK, ctIDFK)
-		contentImageSelect = fmt.Sprintf(",\n    COALESCE(ct.%s, '') AS content_image", ctImg)
+		contentImageSelect = fmt.Sprintf(
+			",\n    COALESCE(ct.%s, '') AS content_type_title,\n    COALESCE(ct.%s, '') AS content_image",
+			ctTitle,
+			ctImg,
+		)
+	} else {
+		contentImageSelect = ",\n    '' AS content_type_title,\n    '' AS content_image"
 	}
+
+	packageDetailSelect, packageDetailJoins := buildNearbyPackageDetailSQL(dialect)
 
 	// ---- shipment images (optional) ----
 	var shipmentImagesSelect string
@@ -328,6 +351,9 @@ func NewShipmentDB(ctx context.Context, cfg ShipmentDBConfig) (*ShipmentDB, erro
 		contentJoin:            contentJoin,
 		contentImageSelect:     contentImageSelect,
 		shipmentImagesSelect:   shipmentImagesSelect,
+		packageDetailSelect:    packageDetailSelect,
+		packageDetailJoins:     packageDetailJoins,
+		mediaPublicBaseURL:     strings.TrimSpace(cfg.MediaPublicBaseURL),
 	}, nil
 }
 
@@ -357,7 +383,33 @@ func (s *ShipmentDB) FindNearbyShipments(ctx context.Context, lat, lng, radiusKm
 	}
 	defer rows.Close()
 
-	return scanShipmentRows(rows)
+	items, err := scanShipmentRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	s.resolveNearbyMediaURLs(items)
+	return items, nil
+}
+
+func (s *ShipmentDB) resolveNearbyMediaURLs(items []map[string]any) {
+	if s == nil || len(items) == 0 {
+		return
+	}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		if raw, ok := item["content_image"]; ok {
+			item["content_image"] = ResolvePublicMediaURL(s.mediaPublicBaseURL, anyToString(raw))
+		}
+		switch paths := item["images"].(type) {
+		case []string:
+			for i, p := range paths {
+				paths[i] = ResolvePublicMediaURL(s.mediaPublicBaseURL, p)
+			}
+			item["images"] = paths
+		}
+	}
 }
 
 // UserOwnsTrip reports whether trips.id belongs directly to the authenticated
@@ -605,6 +657,20 @@ func anyToFloat64(v any) float64 {
 	return 0
 }
 
+// anyToString converts common DB value types to string.
+func anyToString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	default:
+		return fmt.Sprint(x)
+	}
+}
+
 func (s *ShipmentDB) buildNearbyQuery(lat, lng, radiusKm float64, limit int) (string, []any) {
 	if s.locationColumn != "" {
 		return s.buildNearbyQueryPostGIS(lat, lng, radiusKm, limit)
@@ -639,6 +705,10 @@ func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit i
 	if s.contentJoin != "" {
 		contentJoin = "\n" + s.contentJoin
 	}
+	detailJoins := ""
+	if s.packageDetailJoins != "" {
+		detailJoins = "\n" + s.packageDetailJoins
+	}
 
 	query := fmt.Sprintf(`
 SELECT s.%[8]s AS id,
@@ -648,8 +718,8 @@ SELECT s.%[8]s AS id,
     s.%[13]s AS shipping_type_id,
     ST_Y(%[1]s::geometry)::float8 AS start_lat,
     ST_X(%[1]s::geometry)::float8 AS start_lng%[2]s,
-    ST_Distance(%[1]s::geography, ST_MakePoint($2, $1)::geography) / 1000.0 AS distance_km%[4]s%[10]s
-FROM %[3]s AS s%[5]s
+    ST_Distance(%[1]s::geography, ST_MakePoint($2, $1)::geography) / 1000.0 AS distance_km%[4]s%[14]s%[10]s
+FROM %[3]s AS s%[5]s%[15]s
 WHERE %[1]s IS NOT NULL
   AND %[6]s = %[7]d
   AND ST_DWithin(%[1]s::geography, ST_MakePoint($2, $1)::geography, $3)
@@ -658,8 +728,8 @@ LIMIT $4`,
 		locCol,
 		endCols,
 		s.table,
-		s.contentImageSelect, // [4]: ",\n    COALESCE(ct.image, '') AS content_image" or ""
-		contentJoin,          // [5]: "\nLEFT JOIN content_types AS ct ON ..." or ""
+		s.contentImageSelect, // [4]
+		contentJoin,          // [5]
 		lastStatusCol,
 		nearbyShipmentStatusID,
 		s.idColumn,
@@ -668,6 +738,8 @@ LIMIT $4`,
 		s.visibleOnMapCol,
 		s.shipmentCodeCol,
 		s.shippingTypeIDCol,
+		s.packageDetailSelect, // [14]
+		detailJoins,           // [15]
 	)
 
 	return query, args
@@ -731,6 +803,10 @@ func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit
 	if s.contentJoin != "" {
 		contentJoin = "\n    " + s.contentJoin
 	}
+	detailJoins := ""
+	if s.packageDetailJoins != "" {
+		detailJoins = "\n    " + s.packageDetailJoins
+	}
 
 	minLat, maxLat, minLng, maxLng := shipmentBoundingBox(lat, lng, radiusKm)
 	query := fmt.Sprintf(`
@@ -743,8 +819,8 @@ FROM (
         s.%s AS shipping_type_id,
         %s AS start_lat,
         %s AS start_lng,
-        %s AS distance_km%s%s
-    FROM %s AS s%s
+        %s AS distance_km%s%s%s
+    FROM %s AS s%s%s
     WHERE %s IS NOT NULL
       AND %s IS NOT NULL
       AND %s = %d
@@ -762,10 +838,12 @@ LIMIT %s`,
 		latRef,
 		lngRef,
 		distanceExpr,
-		s.contentImageSelect, // ",\n    COALESCE(ct.image, '') AS content_image" or ""
+		s.contentImageSelect,
+		s.packageDetailSelect,
 		s.shipmentImagesSelect,
 		s.table,
-		contentJoin, // "\n    LEFT JOIN content_types AS ct ON ..." or ""
+		contentJoin,
+		detailJoins,
 		latRef,
 		lngRef,
 		lastStatusCol,
@@ -845,6 +923,59 @@ func buildShipmentImagesSelect(dialect, table, shipmentIDColumn, imageColumn, im
 	)
 }
 
+// buildNearbyPackageDetailSQL returns SELECT fragments and JOINs for package
+// content, dimensions, flags, and related titles used by nearby passenger.
+func buildNearbyPackageDetailSQL(dialect string) (selectSQL, joinSQL string) {
+	pt := quotedTable(dialect, "package_types")
+	st := quotedTable(dialect, "shipping_types")
+	if dialect == "postgres" {
+		selectSQL = `,
+    s."content_type_id" AS content_type_id,
+    s."package_type_id" AS package_type_id,
+    COALESCE(pt."title", '') AS package_type_title,
+    COALESCE(st."title", '') AS shipping_type_title,
+    s."package_weight" AS package_weight,
+    s."package_height" AS package_height,
+    s."package_width" AS package_width,
+    s."package_length" AS package_length,
+    s."package_value" AS package_value,
+    s."has_insurance" AS has_insurance,
+    s."is_fragile" AS is_fragile,
+    s."is_liquid" AS is_liquid,
+    s."is_battery" AS is_battery,
+    COALESCE(s."description", '') AS description`
+		joinSQL = fmt.Sprintf(
+			`LEFT JOIN %s AS pt ON pt."id" = s."package_type_id"
+LEFT JOIN %s AS st ON st."id" = s."shipping_type_id"`,
+			pt,
+			st,
+		)
+		return selectSQL, joinSQL
+	}
+	selectSQL = `,
+    s.content_type_id AS content_type_id,
+    s.package_type_id AS package_type_id,
+    COALESCE(pt.title, '') AS package_type_title,
+    COALESCE(st.title, '') AS shipping_type_title,
+    s.package_weight AS package_weight,
+    s.package_height AS package_height,
+    s.package_width AS package_width,
+    s.package_length AS package_length,
+    s.package_value AS package_value,
+    s.has_insurance AS has_insurance,
+    s.is_fragile AS is_fragile,
+    s.is_liquid AS is_liquid,
+    s.is_battery AS is_battery,
+    COALESCE(s.description, '') AS description`
+	joinSQL = fmt.Sprintf(
+		`LEFT JOIN %s AS pt ON pt.id = s.package_type_id
+LEFT JOIN %s AS st ON st.id = s.shipping_type_id`,
+		pt,
+		st,
+	)
+	return selectSQL, joinSQL
+}
+
 // ── placeholder helpers ───────────────────────────────────────────────────────
 
 type placeholderArgs struct {
@@ -907,7 +1038,9 @@ func normalizeSQLValue(column string, v any) any {
 			return normalizeJSONStringArray(string(x))
 		}
 		if column == "distance_km" || column == "start_lat" || column == "start_lng" ||
-			column == "end_lat" || column == "end_lng" || column == "package_weight" {
+			column == "end_lat" || column == "end_lng" || column == "package_weight" ||
+			column == "package_height" || column == "package_width" || column == "package_length" ||
+			column == "package_value" {
 			if f, err := strconv.ParseFloat(string(x), 64); err == nil {
 				return f
 			}

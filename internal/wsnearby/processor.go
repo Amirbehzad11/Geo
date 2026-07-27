@@ -56,7 +56,7 @@ func (p *NearbyProcessor) ProcessLocationUpdate(ctx context.Context, session *Se
 	case "sender":
 		return p.searchDrivers(ctx, req)
 	case "passenger":
-		return p.searchShipments(ctx, req)
+		return p.searchShipments(ctx, session, req)
 	default:
 		wsplatform.RecordError(p.channel, "validation_error")
 		return nil, errors.New("unsupported nearby request type")
@@ -92,14 +92,18 @@ func (p *NearbyProcessor) searchDrivers(ctx context.Context, req model.NearbyShi
 	return result, nil
 }
 
-func (p *NearbyProcessor) searchShipments(ctx context.Context, req model.NearbyShipmentRequest) (any, error) {
+func (p *NearbyProcessor) searchShipments(ctx context.Context, session *Session, req model.NearbyShipmentRequest) (any, error) {
 	if p.shipments == nil {
 		wsplatform.RecordError(p.channel, "shipment_search_disabled")
 		return nil, ErrShipmentDisabled
 	}
+	userID := int64(0)
+	if session != nil {
+		userID = session.UserID()
+	}
 	var result any
 	err := p.shipmentCB.Execute(func() (any, error) {
-		resp, err := p.shipments.SearchNearby(ctx, req)
+		resp, err := p.shipments.SearchNearby(ctx, req, userID)
 		if err != nil {
 			return nil, err
 		}

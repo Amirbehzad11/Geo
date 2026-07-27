@@ -41,7 +41,7 @@ func TestShipmentServiceSearchNearbyUsesVehicleAllowed(t *testing.T) {
 		Lat:                35.7,
 		Lng:                51.4,
 		FilterVehicleTypes: []int64{4},
-	})
+	}, 0)
 	if err != nil {
 		t.Fatalf("SearchNearby returned error: %v", err)
 	}

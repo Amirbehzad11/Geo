@@ -8,14 +8,18 @@ import (
 // TestShipmentNearbyQueryPostGIS verifies the PostGIS query shape: positional
 // args, ST_DWithin filter, ST_Y/ST_X extraction, and LIMIT $4.
 func TestShipmentNearbyQueryPostGIS(t *testing.T) {
+	detailSelect, detailJoins := buildNearbyPackageDetailSQL("postgres")
 	db := &ShipmentDB{
-		dialect:           "postgres",
-		table:             `"public"."shipments"`,
-		idColumn:          `"id"`,
-		visibleOnMapCol:   `"visible_on_map"`,
-		shipmentCodeCol:   `"shipment_code"`,
-		shippingTypeIDCol: `"shipping_type_id"`,
-		locationColumn:    `"start_location"`,
+		dialect:             "postgres",
+		table:               `"public"."shipments"`,
+		idColumn:            `"id"`,
+		visibleOnMapCol:     `"visible_on_map"`,
+		shipmentCodeCol:     `"shipment_code"`,
+		shippingTypeIDCol:   `"shipping_type_id"`,
+		locationColumn:      `"start_location"`,
+		packageDetailSelect: detailSelect,
+		packageDetailJoins:  detailJoins,
+		contentImageSelect:  ",\n    '' AS content_type_title,\n    '' AS content_image",
 	}
 
 	query, args := db.buildNearbyQuery(35.7, 51.4, 2, 50)
@@ -29,7 +33,7 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 		t.Fatalf("expected ST_DWithin in PostGIS query, got:\n%s", query)
 	}
 	// Only active/searchable shipments should be returned.
-	if !strings.Contains(query, `AND s."last_status_id" = 4`) {
+	if !strings.Contains(query, `AND s."last_status_id" = 5`) {
 		t.Fatalf("expected last_status_id filter in PostGIS query, got:\n%s", query)
 	}
 	// Lat extraction (ST_Y = latitude)
@@ -55,6 +59,19 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	}
 	if !strings.Contains(query, `s."shipping_type_id" AS shipping_type_id`) {
 		t.Fatalf("expected shipping_type_id column in PostGIS query, got:\n%s", query)
+	}
+	for _, want := range []string{
+		`package_weight`,
+		`package_height`,
+		`is_fragile`,
+		`has_insurance`,
+		`content_type_id`,
+		`package_type_title`,
+		`shipping_type_title`,
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("expected package detail field %q in PostGIS query, got:\n%s", want, query)
+		}
 	}
 	// LIMIT uses positional placeholder
 	if !strings.Contains(query, "LIMIT $4") {
@@ -167,7 +184,7 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	if strings.Contains(query, "$1") {
 		t.Fatalf("MySQL query must not contain postgres placeholders: %s", query)
 	}
-	if !strings.Contains(query, "AND s.`last_status_id` = 4") {
+	if !strings.Contains(query, "AND s.`last_status_id` = 5") {
 		t.Fatalf("expected last_status_id filter in MySQL query, got:\n%s", query)
 	}
 	if !strings.Contains(query, "AS visible_on_map") {

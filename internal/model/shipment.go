@@ -27,11 +27,33 @@ type NearbyShipmentQuery struct {
 // search. Shipment rows are returned as dynamic maps because the Laravel table
 // schema is owned by another application.
 type NearbyShipmentResponse struct {
-	Type      string              `json:"type"`
-	Timestamp int64               `json:"timestamp_ms"`
-	Query     NearbyShipmentQuery `json:"query"`
-	Count     int                 `json:"count"`
-	Shipments []map[string]any    `json:"shipments"`
+	Type         string              `json:"type"`
+	Timestamp    int64               `json:"timestamp_ms"`
+	Query        NearbyShipmentQuery `json:"query"`
+	Count        int                 `json:"count"`
+	Shipments    []map[string]any    `json:"shipments"`
+	UserVehicles []UserVehicle       `json:"user_vehicles"`
+}
+
+// UserVehicle is a registered vehicle belonging to the authenticated passenger.
+type UserVehicle struct {
+	ID                int64  `json:"id"`
+	UserID            int64  `json:"user_id"`
+	VehicleTypeID    int64  `json:"vehicle_type_id"`
+	VehicleTypeTitle string `json:"vehicle_type_title"`
+	Title             string `json:"title"`
+	VIN               string `json:"vin,omitempty"`
+	Color             string `json:"color,omitempty"`
+	Plaque1           string `json:"plaque1,omitempty"`
+	PlaqueAlphabet    string `json:"plaque_alphabet,omitempty"`
+	Plaque2           string `json:"plaque2,omitempty"`
+	Plaque3           string `json:"plaque3,omitempty"`
+	MotorPlaque1      string `json:"motor_plaque1,omitempty"`
+	MotorPlaque2      string `json:"motor_plaque2,omitempty"`
+	CardImage         string `json:"card_image,omitempty"`
+	IsDefault         bool   `json:"is_default"`
+	Status            string `json:"status"`
+	StatusDescription string `json:"status_description,omitempty"`
 }
 
 // VehicleBoxSize is a legacy shape kept for backward compatibility.
