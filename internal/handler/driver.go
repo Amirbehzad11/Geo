@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -39,9 +40,12 @@ func (h *DriverHandler) UpdateLocation(c *gin.Context) {
 	if !validateCoords(c, req.Lat, req.Lng) {
 		return
 	}
-	if !authorizeDriverUpdate(c, req.DriverID.String()) {
+
+	driverID, ok := resolveAuthenticatedDriverID(c, req.DriverID.String())
+	if !ok {
 		return
 	}
+	req.DriverID = model.StringID(driverID)
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), driverLocationTimeout)
 	defer cancel()
@@ -59,18 +63,23 @@ func (h *DriverHandler) UpdateLocation(c *gin.Context) {
 	response.OK(c, result)
 }
 
-func authorizeDriverUpdate(c *gin.Context, driverID string) bool {
+// resolveAuthenticatedDriverID picks the Redis member id for a location write.
+// JWT clients: always use token user_id/sub (body driver_id is ignored).
+// API-key clients (simulators): require explicit body driver_id.
+func resolveAuthenticatedDriverID(c *gin.Context, bodyDriverID string) (string, bool) {
 	if middleware.AuthenticatedWithAPIKey(c) {
-		return true
+		id := strings.TrimSpace(bodyDriverID)
+		if id == "" {
+			response.Fail(c, http.StatusBadRequest, "DRIVER_ID_REQUIRED", "driver_id is required for API-key clients")
+			return "", false
+		}
+		return id, true
 	}
+
 	userID, ok := middleware.AuthenticatedUserID(c)
 	if !ok {
 		response.Fail(c, http.StatusUnauthorized, "UNAUTHORIZED", "authenticated user is required")
-		return false
+		return "", false
 	}
-	if driverID != strconv.FormatInt(userID, 10) {
-		response.Fail(c, http.StatusForbidden, "FORBIDDEN", "driver access denied")
-		return false
-	}
-	return true
+	return strconv.FormatInt(userID, 10), true
 }

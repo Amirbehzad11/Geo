@@ -34,18 +34,38 @@ func (s StringID) String() string {
 }
 
 type DriverLocationRequest struct {
-	DriverID    StringID `json:"driver_id"`
+	// DriverID is required for API-key clients. JWT Bearer clients ignore this
+	// field; the authenticated user_id/sub from the token is used instead.
+	DriverID    StringID `json:"driver_id,omitempty"`
 	Lat         float64  `json:"lat"`
 	Lng         float64  `json:"lng"`
 	TimestampMs int64    `json:"timestamp_ms,omitempty"`
 }
 
 // DriverActiveJob is the latest in-progress shipping for a nearby driver.
+// When HasShipping is true, Destination/TripID/VehicleTypeID come from the
+// active shipping row. When HasShipping is false, only LatestTrip is set
+// (last registered trip with no active shipping).
 type DriverActiveJob struct {
-	Destination      string `json:"destination"`
-	TripID           int64  `json:"trip_id"`
-	VehicleTypeID    int64  `json:"vehicle_type_id"`
+	// Shipping-based fields (populated when HasShipping = true)
+	Destination      string `json:"destination,omitempty"`
+	TripID           int64  `json:"trip_id,omitempty"`
+	VehicleTypeID    int64  `json:"vehicle_type_id,omitempty"`
 	VehicleTypeImage string `json:"vehicle_type_image,omitempty"`
+
+	// HasShipping indicates whether the driver has an active shipping.
+	HasShipping bool `json:"has_shipping"`
+
+	// LatestTrip is the last trip registered by the driver when there is no
+	// active shipping. Nil when HasShipping is true.
+	LatestTrip *DriverLatestTrip `json:"latest_trip,omitempty"`
+}
+
+// DriverLatestTrip carries the minimal trip info shown on the sender map
+// when the driver has no active shipping.
+type DriverLatestTrip struct {
+	TripID      int64  `json:"trip_id"`
+	Destination string `json:"destination"`
 }
 
 type DriverLocation struct {

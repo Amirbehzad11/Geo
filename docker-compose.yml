@@ -219,27 +219,28 @@ services:
     environment:
       REDIS_ADDR: redis:6379
       DRIVER_GEO_KEY: drivers:geo
-      SIM_DRIVER_COUNT: "1"
-      SIM_DRIVER_ID_START: "1"
+      SIM_DRIVER_COUNT: "${SIM_DRIVER_COUNT:-15}"
+      SIM_DRIVER_ID_START: "${SIM_DRIVER_ID_START:-131165}"
       SIM_DRIVER_CITY: isfahan
-      SIM_DRIVER_WORKERS: "4"
+      SIM_DRIVER_WORKERS: "2"
     command:
       - -redis=redis:6379
       - -city=isfahan
-      - -count=1
-      - -id-start=1
+      - -count=${SIM_DRIVER_COUNT:-15}
+      - -id-start=${SIM_DRIVER_ID_START:-131165}
       - -anchor-lat=32.646625
       - -anchor-lng=51.664761
-      - -workers=4
+      - -workers=2
       - -tick=5s
-      - -batch-size=100
+      - -batch-size=${SIM_DRIVER_COUNT:-15}
+      - -move-min-m=8
+      - -move-max-m=25
       - -min-move-m=10
-      - -active-ratio=0.1
+      - -active-ratio=1.0
       - -keepalive-sec=90
       - -reset-geo
     profiles:
       - sim
-
   # Simulates passenger GPS along a fixed route and posts to /gps/update.
   # Requires API_KEY_ENABLED=true (or JWT for trip owner) on geo-service.
   # Enable with: docker compose --profile sim up -d --build sim-passenger

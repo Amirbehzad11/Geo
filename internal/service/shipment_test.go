@@ -12,6 +12,8 @@ import (
 type fakeShipmentRepo struct {
 	rows  []map[string]any
 	types []model.VehicleType
+
+	shippings map[int64]map[string]any
 }
 
 func (f fakeShipmentRepo) FindNearbyShipments(context.Context, float64, float64, float64, int) ([]map[string]any, error) {
@@ -20,6 +22,22 @@ func (f fakeShipmentRepo) FindNearbyShipments(context.Context, float64, float64,
 
 func (f fakeShipmentRepo) LoadVehicleTypes(context.Context) ([]model.VehicleType, error) {
 	return f.types, nil
+}
+
+func (f fakeShipmentRepo) LoadShippingsByShipmentIDs(ctx context.Context, shipmentIDs []int64) (map[int64]map[string]any, error) {
+	if len(shipmentIDs) == 0 {
+		return map[int64]map[string]any{}, nil
+	}
+	out := make(map[int64]map[string]any, len(shipmentIDs))
+	for _, id := range shipmentIDs {
+		if f.shippings == nil {
+			continue
+		}
+		if s, ok := f.shippings[id]; ok {
+			out[id] = s
+		}
+	}
+	return out, nil
 }
 
 func TestShipmentServiceSearchNearbyUsesVehicleAllowed(t *testing.T) {
@@ -93,5 +111,31 @@ func TestShipmentAllowedVehicleIDsParsesCommonFormats(t *testing.T) {
 				t.Fatalf("unexpected ids: got %#v want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestShipmentServiceHidesShipmentsWithActiveShippingForOtherPassengers(t *testing.T) {
+	repo := fakeShipmentRepo{
+		rows: []map[string]any{
+			{"id": int64(1), "vehicle_allowed": nil},
+			{"id": int64(2), "vehicle_allowed": nil},
+		},
+		types:      nil,
+		shippings: map[int64]map[string]any{1: {"passenger_user_id": int64(10)}, 2: {"passenger_user_id": int64(11)}},
+	}
+
+	svc := NewShipmentService(repo, 0, 10)
+	resp, err := svc.SearchNearby(context.Background(), model.NearbyShipmentRequest{
+		Lat: 32.0,
+		Lng: 51.0,
+	}, 10)
+	if err != nil {
+		t.Fatalf("SearchNearby returned error: %v", err)
+	}
+	if resp.Count != 1 || len(resp.Shipments) != 1 {
+		t.Fatalf("expected 1 shipment after filtering, got count=%d len=%d", resp.Count, len(resp.Shipments))
+	}
+	if got := resp.Shipments[0]["id"]; got != int64(1) {
+		t.Fatalf("expected shipment id=1 to survive, got %#v", got)
 	}
 }
