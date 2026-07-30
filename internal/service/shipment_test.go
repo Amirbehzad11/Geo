@@ -114,14 +114,18 @@ func TestShipmentAllowedVehicleIDsParsesCommonFormats(t *testing.T) {
 	}
 }
 
-func TestShipmentServiceHidesShipmentsWithActiveShippingForOtherPassengers(t *testing.T) {
+func TestShipmentServiceHidesShipmentsWithActiveShipping(t *testing.T) {
 	repo := fakeShipmentRepo{
 		rows: []map[string]any{
 			{"id": int64(1), "vehicle_allowed": nil},
 			{"id": int64(2), "vehicle_allowed": nil},
+			{"id": int64(3), "vehicle_allowed": nil},
 		},
-		types:      nil,
-		shippings: map[int64]map[string]any{1: {"passenger_user_id": int64(10)}, 2: {"passenger_user_id": int64(11)}},
+		types: nil,
+		shippings: map[int64]map[string]any{
+			1: {"passenger_user_id": int64(10)},
+			2: {"passenger_user_id": int64(11)},
+		},
 	}
 
 	svc := NewShipmentService(repo, 0, 10)
@@ -135,7 +139,10 @@ func TestShipmentServiceHidesShipmentsWithActiveShippingForOtherPassengers(t *te
 	if resp.Count != 1 || len(resp.Shipments) != 1 {
 		t.Fatalf("expected 1 shipment after filtering, got count=%d len=%d", resp.Count, len(resp.Shipments))
 	}
-	if got := resp.Shipments[0]["id"]; got != int64(1) {
-		t.Fatalf("expected shipment id=1 to survive, got %#v", got)
+	if got := resp.Shipments[0]["id"]; got != int64(3) {
+		t.Fatalf("expected shipment id=3 (no shipping) to survive, got %#v", got)
+	}
+	if resp.Shipments[0]["shipping"] != nil {
+		t.Fatalf("expected surviving shipment to have nil shipping")
 	}
 }

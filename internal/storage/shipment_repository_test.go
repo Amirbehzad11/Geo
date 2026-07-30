@@ -36,6 +36,19 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	if !strings.Contains(query, `AND s."last_status_id" = 5`) {
 		t.Fatalf("expected last_status_id filter in PostGIS query, got:\n%s", query)
 	}
+	// Shipments with active shipping or ACCEPTED shipping_ask stay off the map.
+	if !strings.Contains(query, `FROM "shippings" AS sh`) {
+		t.Fatalf("expected active shipping exclusion in PostGIS query, got:\n%s", query)
+	}
+	if !strings.Contains(query, `NOT IN ('CANCELED','DELIVERED')`) {
+		t.Fatalf("expected shipping status exclusion labels in PostGIS query, got:\n%s", query)
+	}
+	if !strings.Contains(query, `FROM "shipping_asks" AS sa`) {
+		t.Fatalf("expected accepted shipping_ask exclusion in PostGIS query, got:\n%s", query)
+	}
+	if !strings.Contains(query, `UPPER(sas."label") = 'ACCEPTED'`) {
+		t.Fatalf("expected ACCEPTED shipping_ask filter in PostGIS query, got:\n%s", query)
+	}
 	// Lat extraction (ST_Y = latitude)
 	if !strings.Contains(query, `ST_Y("start_location"::geometry)::float8 AS start_lat`) {
 		t.Fatalf("expected ST_Y extraction as start_lat, got:\n%s", query)
@@ -186,6 +199,15 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	}
 	if !strings.Contains(query, "AND s.`last_status_id` = 5") {
 		t.Fatalf("expected last_status_id filter in MySQL query, got:\n%s", query)
+	}
+	if !strings.Contains(query, "FROM `shippings` AS sh") {
+		t.Fatalf("expected active shipping exclusion in MySQL query, got:\n%s", query)
+	}
+	if !strings.Contains(query, "FROM `shipping_asks` AS sa") {
+		t.Fatalf("expected accepted shipping_ask exclusion in MySQL query, got:\n%s", query)
+	}
+	if !strings.Contains(query, "UPPER(sas.`label`) = 'ACCEPTED'") {
+		t.Fatalf("expected ACCEPTED shipping_ask filter in MySQL query, got:\n%s", query)
 	}
 	if !strings.Contains(query, "AS visible_on_map") {
 		t.Fatalf("expected visible_on_map column in MySQL query, got:\n%s", query)

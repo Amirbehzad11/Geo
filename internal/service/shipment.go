@@ -123,28 +123,16 @@ func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShip
 	}
 	s.attachShippings(ctx, out)
 
-	// Hide shipments that already have an active shipping for other passengers.
-	// For the authenticated passenger, we keep their own active shipping (if any).
-	if userID > 0 {
-		filtered := out[:0]
-		for _, row := range out {
-			shipRaw := row["shipping"]
-			if shipRaw != nil {
-				shipMap, ok := shipRaw.(map[string]any)
-				if !ok {
-					// Unexpected shape: safest behavior is to hide.
-					continue
-				}
-
-				passengerID, ok := toInt64(shipMap["passenger_user_id"])
-				if !ok || passengerID <= 0 || passengerID != userID {
-					continue
-				}
-			}
-			filtered = append(filtered, row)
+	// Hide shipments that already have an active shipping — they must not appear
+	// on the nearby passenger map (SQL also excludes ACCEPTED shipping_asks).
+	filtered := out[:0]
+	for _, row := range out {
+		if row["shipping"] != nil {
+			continue
 		}
-		out = filtered
+		filtered = append(filtered, row)
 	}
+	out = filtered
 
 	return &model.NearbyShipmentResponse{
 		Type:      "shipment.nearby",
