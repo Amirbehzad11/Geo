@@ -16,7 +16,7 @@ type fakeShipmentRepo struct {
 	shippings map[int64]map[string]any
 }
 
-func (f fakeShipmentRepo) FindNearbyShipments(context.Context, float64, float64, float64, int) ([]map[string]any, error) {
+func (f fakeShipmentRepo) FindNearbyShipments(context.Context, float64, float64, float64, int, int64) ([]map[string]any, error) {
 	return f.rows, nil
 }
 
@@ -123,8 +123,8 @@ func TestShipmentServiceHidesShipmentsWithActiveShipping(t *testing.T) {
 		},
 		types: nil,
 		shippings: map[int64]map[string]any{
-			1: {"passenger_user_id": int64(10)},
-			2: {"passenger_user_id": int64(11)},
+			1: {"id": int64(100), "passenger_user_id": int64(10)},
+			2: {"id": int64(200), "passenger_user_id": int64(11)},
 		},
 	}
 
@@ -136,13 +136,42 @@ func TestShipmentServiceHidesShipmentsWithActiveShipping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchNearby returned error: %v", err)
 	}
-	if resp.Count != 1 || len(resp.Shipments) != 1 {
-		t.Fatalf("expected 1 shipment after filtering, got count=%d len=%d", resp.Count, len(resp.Shipments))
+	if resp.Count != 2 || len(resp.Shipments) != 2 {
+		t.Fatalf("expected 2 shipments after filtering, got count=%d len=%d", resp.Count, len(resp.Shipments))
 	}
-	if got := resp.Shipments[0]["id"]; got != int64(3) {
-		t.Fatalf("expected shipment id=3 (no shipping) to survive, got %#v", got)
+
+	byID := map[int64]map[string]any{}
+	for _, row := range resp.Shipments {
+		id, ok := row["id"].(int64)
+		if !ok {
+			t.Fatalf("unexpected shipment id type: %#v", row["id"])
+		}
+		byID[id] = row
 	}
-	if resp.Shipments[0]["shipping"] != nil {
-		t.Fatalf("expected surviving shipment to have nil shipping")
+
+	mine, ok := byID[1]
+	if !ok {
+		t.Fatal("expected passenger's own active shipping (id=1) to survive")
+	}
+	if mine["can_resume_navigation"] != true {
+		t.Fatalf("expected can_resume_navigation=true for own shipping, got %#v", mine["can_resume_navigation"])
+	}
+	if mine["shipping_id"] != int64(100) {
+		t.Fatalf("expected shipping_id=100, got %#v", mine["shipping_id"])
+	}
+
+	open, ok := byID[3]
+	if !ok {
+		t.Fatal("expected open shipment id=3 to survive")
+	}
+	if open["can_resume_navigation"] != false {
+		t.Fatalf("expected can_resume_navigation=false for open shipment, got %#v", open["can_resume_navigation"])
+	}
+	if open["shipping"] != nil {
+		t.Fatalf("expected open shipment to have nil shipping")
+	}
+
+	if _, ok := byID[2]; ok {
+		t.Fatal("expected another passenger's active shipping (id=2) to be hidden")
 	}
 }

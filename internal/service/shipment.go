@@ -27,7 +27,7 @@ const (
 
 // ShipmentRepository is the read-only storage contract used by ShipmentService.
 type ShipmentRepository interface {
-	FindNearbyShipments(ctx context.Context, lat, lng, radiusKm float64, limit int) ([]map[string]any, error)
+	FindNearbyShipments(ctx context.Context, lat, lng, radiusKm float64, limit int, passengerUserID int64) ([]map[string]any, error)
 }
 
 // ShippingRepository optionally enriches shipments with active shipping rows.
@@ -100,7 +100,7 @@ func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShip
 		limit = maxShipmentLimit
 	}
 
-	rows, err := s.repo.FindNearbyShipments(ctx, req.Lat, req.Lng, radiusKm, limit)
+	rows, err := s.repo.FindNearbyShipments(ctx, req.Lat, req.Lng, radiusKm, limit, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -123,14 +123,26 @@ func (s *ShipmentService) SearchNearby(ctx context.Context, req model.NearbyShip
 	}
 	s.attachShippings(ctx, out)
 
-	// Hide shipments that already have an active shipping — they must not appear
-	// on the nearby passenger map (SQL also excludes ACCEPTED shipping_asks).
+	// Hide shipments with an active shipping belonging to someone else.
+	// Keep the authenticated passenger's own active delivery so they can
+	// resume navigation after leaving and re-entering the map.
 	filtered := out[:0]
 	for _, row := range out {
-		if row["shipping"] != nil {
+		shipping, hasShipping := row["shipping"].(map[string]any)
+		if !hasShipping || shipping == nil {
+			row["can_resume_navigation"] = false
+			filtered = append(filtered, row)
 			continue
 		}
-		filtered = append(filtered, row)
+		passengerID, ok := toInt64(shipping["passenger_user_id"])
+		if ok && userID > 0 && passengerID == userID {
+			row["can_resume_navigation"] = true
+			if shippingID, ok := toInt64(shipping["id"]); ok && shippingID > 0 {
+				row["shipping_id"] = shippingID
+			}
+			filtered = append(filtered, row)
+			continue
+		}
 	}
 	out = filtered
 

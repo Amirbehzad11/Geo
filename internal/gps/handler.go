@@ -16,6 +16,7 @@ import (
 type GPSHandler struct {
 	svc         *GPSService
 	authz       TripAuthorizer
+	presence    PresenceUpdater
 	requireAuth bool
 }
 
@@ -28,15 +29,26 @@ func NewGPSHandler(svc *GPSService, requireAuth bool, authorizers ...TripAuthori
 	return h
 }
 
+// WithPresence enables user map-presence updates when trip_id is omitted.
+func (h *GPSHandler) WithPresence(updater PresenceUpdater) *GPSHandler {
+	h.presence = updater
+	return h
+}
+
 type TripAuthorizer interface {
 	UserOwnsTrip(ctx context.Context, userID, tripID int64) (bool, error)
 	UserCanAccessTrip(ctx context.Context, userID, tripID int64) (bool, error)
 }
 
+// PresenceUpdater stores the authenticated user's live position for nearby/map visibility.
+type PresenceUpdater interface {
+	UpdatePresence(ctx context.Context, userID string, lat, lng float64, timestampMs int64) (any, error)
+}
+
 // Update handles POST /gps/update
 //
 //	@Summary		Process a GPS update
-//	@Description	Accepts a raw GPS position for an active trip. Applies rate limiting, EMA smoothing (α=0.75), speed computation, and cross-track deviation detection against the planned route. Writes state to Redis and broadcasts events via Redis Pub/Sub.
+//	@Description	With trip_id: trip tracking (EMA, speed, deviation). Without trip_id: updates the Bearer user's live map presence (same as POST /driver-location).
 //	@Tags			gps
 //	@Accept			json
 //	@Produce		json
@@ -54,15 +66,18 @@ func (h *GPSHandler) Update(c *gin.Context) {
 		return
 	}
 
-	if update.TripID <= 0 {
-		response.ValidationFail(c, "trip_id must be a positive integer")
+	if !validateCoords(c, update.Lat, update.Lng) {
 		return
 	}
+
+	// No trip_id → update the authenticated user's live map position.
+	if update.TripID <= 0 {
+		h.updatePresence(c, update)
+		return
+	}
+
 	if update.Timestamp <= 0 {
 		response.ValidationFail(c, "timestamp must be a positive Unix epoch (seconds)")
-		return
-	}
-	if !validateCoords(c, update.Lat, update.Lng) {
 		return
 	}
 	if !h.authorizeTripWrite(c, update.TripID) {
@@ -81,6 +96,46 @@ func (h *GPSHandler) Update(c *gin.Context) {
 
 	middleware.GPSUpdateTotal.Inc()
 	response.OK(c, state)
+}
+
+func (h *GPSHandler) updatePresence(c *gin.Context, update GPSUpdate) {
+	if h.presence == nil {
+		response.Fail(c, http.StatusServiceUnavailable, "PRESENCE_DISABLED", "user location updates are not configured")
+		return
+	}
+
+	userID, ok := resolvePresenceUserID(c)
+	if !ok {
+		return
+	}
+
+	timestampMs := int64(0)
+	if update.Timestamp > 0 {
+		timestampMs = update.Timestamp * 1000
+	}
+
+	result, err := h.presence.UpdatePresence(c.Request.Context(), userID, update.Lat, update.Lng, timestampMs)
+	if err != nil {
+		slog.Error("user presence update failed", "err", err, "user_id", userID)
+		response.Fail(c, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update user location")
+		return
+	}
+
+	response.OK(c, result)
+}
+
+func resolvePresenceUserID(c *gin.Context) (string, bool) {
+	if middleware.AuthenticatedWithAPIKey(c) {
+		response.ValidationFail(c, "trip_id is required for API-key clients; JWT Bearer clients omit trip_id to update user presence")
+		return "", false
+	}
+
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, "UNAUTHORIZED", "authenticated user is required")
+		return "", false
+	}
+	return strconv.FormatInt(userID, 10), true
 }
 
 // GetLocation handles GET /gps/trip/:id/location

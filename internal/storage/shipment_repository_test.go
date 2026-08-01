@@ -22,7 +22,7 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 		contentImageSelect:  ",\n    '' AS content_type_title,\n    '' AS content_image",
 	}
 
-	query, args := db.buildNearbyQuery(35.7, 51.4, 2, 50)
+	query, args := db.buildNearbyQuery(35.7, 51.4, 2, 50, 0)
 
 	// Table reference
 	if !strings.Contains(query, `FROM "public"."shipments" AS s`) {
@@ -39,6 +39,9 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	// Shipments with active shipping or ACCEPTED shipping_ask stay off the map.
 	if !strings.Contains(query, `FROM "shippings" AS sh`) {
 		t.Fatalf("expected active shipping exclusion in PostGIS query, got:\n%s", query)
+	}
+	if !strings.Contains(query, `JOIN "trips" AS t ON t."id" = sh."trip_id"`) {
+		t.Fatalf("expected trips join in active shipping exclusion, got:\n%s", query)
 	}
 	if !strings.Contains(query, `NOT IN ('CANCELED','DELIVERED')`) {
 		t.Fatalf("expected shipping status exclusion labels in PostGIS query, got:\n%s", query)
@@ -120,7 +123,7 @@ func TestShipmentNearbyQueryPostGISWithVehicleAllowed(t *testing.T) {
 		shippingTypeIDCol: `"shipping_type_id"`,
 		locationColumn:    `"start_location"`,
 	}
-	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50)
+	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50, 0)
 	if !strings.Contains(query, `s."vehicle_allowed" AS vehicle_allowed`) {
 		t.Fatalf("expected vehicle_allowed column when configured, got:\n%s", query)
 	}
@@ -140,7 +143,7 @@ func TestShipmentNearbyQueryPostGISWithEndLocation(t *testing.T) {
 		endLocationColumn: `"end_location"`,
 	}
 
-	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50)
+	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50, 0)
 
 	if !strings.Contains(query, `AS end_lat`) {
 		t.Fatalf("expected end_lat column when endLocationColumn is set, got:\n%s", query)
@@ -162,7 +165,7 @@ func TestShipmentNearbyQueryPostGISWithImages(t *testing.T) {
 		shipmentImagesSelect: buildShipmentImagesSelect("postgres", `"shipment_images"`, `"shipment_id"`, `"image"`, `"id"`, `"id"`),
 	}
 
-	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50)
+	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50, 0)
 
 	if !strings.Contains(query, `AS images`) {
 		t.Fatalf("expected images alias in query, got:\n%s", query)
@@ -189,7 +192,7 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 		lngColumn:         "`origin_lng`",
 	}
 
-	query, args := db.buildNearbyQuery(35.7, 51.4, 10, 25)
+	query, args := db.buildNearbyQuery(35.7, 51.4, 10, 25, 0)
 
 	if !strings.Contains(query, "FROM `shipment` AS s") {
 		t.Fatalf("expected quoted MySQL table, got:\n%s", query)
@@ -223,6 +226,23 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	}
 	if args[0] != 35.7 || args[2] != 51.4 {
 		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
+func TestShipmentNearbyQueryKeepsOwnAcceptedDelivery(t *testing.T) {
+	db := &ShipmentDB{
+		dialect:           "postgres",
+		table:             `"shipments"`,
+		idColumn:          `"id"`,
+		visibleOnMapCol:   `"visible_on_map"`,
+		shipmentCodeCol:   `"shipment_code"`,
+		shippingTypeIDCol: `"shipping_type_id"`,
+		locationColumn:    `"start_location"`,
+	}
+
+	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50, 42)
+	if !strings.Contains(query, `AND t."user_id" <> 42`) {
+		t.Fatalf("expected passenger exception filter for user 42, got:\n%s", query)
 	}
 }
 

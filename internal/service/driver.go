@@ -94,6 +94,16 @@ func (s *DriverService) UpdateLocation(ctx context.Context, req model.DriverLoca
 	}, nil
 }
 
+// UpdatePresence stores a user's live map position (used by POST /gps/update without trip_id).
+func (s *DriverService) UpdatePresence(ctx context.Context, userID string, lat, lng float64, timestampMs int64) (any, error) {
+	return s.UpdateLocation(ctx, model.DriverLocationRequest{
+		DriverID:    model.StringID(userID),
+		Lat:         lat,
+		Lng:         lng,
+		TimestampMs: timestampMs,
+	})
+}
+
 func (s *DriverService) SearchNearby(ctx context.Context, lat, lng, radiusKm float64, limit int) (*model.NearbyDriverResponse, error) {
 	if s == nil || s.redis == nil || s.geoKey == "" {
 		return nil, ErrDriverLocationDisabled

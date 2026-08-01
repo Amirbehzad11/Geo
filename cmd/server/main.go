@@ -131,6 +131,7 @@ func main() {
 	if shipmentDB != nil {
 		gpsH = gpsapi.NewGPSHandler(gpsSvc, gpsRequireAuth, shipmentDB)
 	}
+	gpsH = gpsH.WithPresence(driverSvc)
 	driverH := handler.NewDriverHandler(driverSvc)
 	handler.ConfigureWebSocketOrigins(cfg.CORSAllowedOrigins)
 	wsH := handler.NewWSHandler(hub, cfg.WebSocketTripAuthEnabled)

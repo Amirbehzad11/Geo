@@ -365,7 +365,9 @@ func (s *ShipmentDB) Close() {
 }
 
 // FindNearbyShipments returns rows whose origin is within radiusKm of lat/lng.
-func (s *ShipmentDB) FindNearbyShipments(ctx context.Context, lat, lng, radiusKm float64, limit int) ([]map[string]any, error) {
+// When passengerUserID > 0, shipments with an ACCEPTED ask / active shipping
+// owned by that passenger are still returned so they can resume navigation.
+func (s *ShipmentDB) FindNearbyShipments(ctx context.Context, lat, lng, radiusKm float64, limit int, passengerUserID int64) ([]map[string]any, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("shipment db is not configured")
 	}
@@ -376,7 +378,7 @@ func (s *ShipmentDB) FindNearbyShipments(ctx context.Context, lat, lng, radiusKm
 		return nil, errors.New("limit must be positive")
 	}
 
-	query, args := s.buildNearbyQuery(lat, lng, radiusKm, limit)
+	query, args := s.buildNearbyQuery(lat, lng, radiusKm, limit, passengerUserID)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("shipment db: nearby query: %w", err)
@@ -671,11 +673,11 @@ func anyToString(v any) string {
 	}
 }
 
-func (s *ShipmentDB) buildNearbyQuery(lat, lng, radiusKm float64, limit int) (string, []any) {
+func (s *ShipmentDB) buildNearbyQuery(lat, lng, radiusKm float64, limit int, passengerUserID int64) (string, []any) {
 	if s.locationColumn != "" {
-		return s.buildNearbyQueryPostGIS(lat, lng, radiusKm, limit)
+		return s.buildNearbyQueryPostGIS(lat, lng, radiusKm, limit, passengerUserID)
 	}
-	return s.buildNearbyQueryHaversine(lat, lng, radiusKm, limit)
+	return s.buildNearbyQueryHaversine(lat, lng, radiusKm, limit, passengerUserID)
 }
 
 // buildNearbyQueryPostGIS uses PostGIS spatial functions for accurate, index-
@@ -687,7 +689,7 @@ func (s *ShipmentDB) buildNearbyQuery(lat, lng, radiusKm float64, limit int) (st
 //   - start_lat / start_lng  extracted from start_location geometry
 //   - end_lat   / end_lng    extracted from end_location geometry (if configured)
 //   - distance_km
-func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit int) (string, []any) {
+func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit int, passengerUserID int64) (string, []any) {
 	args := []any{lat, lng, radiusKm * 1000.0, limit} // $1 $2 $3 $4
 
 	locCol := s.locationColumn // e.g. "start_location" (already quoted)
@@ -711,7 +713,7 @@ func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit i
 	}
 
 	shipmentRef := "s." + s.idColumn
-	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef)
+	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID)
 
 	query := fmt.Sprintf(`
 SELECT s.%[8]s AS id,
@@ -755,16 +757,18 @@ func excludedShippingStatusLabelsSQL() string {
 
 // nearbyMapExcludeFilters hides shipments that already have an active shipping
 // or an ACCEPTED shipping_ask — those must not appear on the nearby passenger map.
-func (s *ShipmentDB) nearbyMapExcludeFilters(shipmentRef string) string {
+// When passengerUserID > 0, the passenger's own accepted ask / active shipping
+// is kept so they can resume navigation after leaving the map.
+func (s *ShipmentDB) nearbyMapExcludeFilters(shipmentRef string, passengerUserID int64) string {
 	return fmt.Sprintf(`
   AND NOT %s
   AND NOT %s`,
-		s.buildActiveShippingExistsClause(shipmentRef),
-		s.buildAcceptedShippingAskExistsClause(shipmentRef),
+		s.buildActiveShippingExistsClause(shipmentRef, passengerUserID),
+		s.buildAcceptedShippingAskExistsClause(shipmentRef, passengerUserID),
 	)
 }
 
-func (s *ShipmentDB) buildActiveShippingExistsClause(shipmentRef string) string {
+func (s *ShipmentDB) buildActiveShippingExistsClause(shipmentRef string, passengerUserID int64) string {
 	shippingsTable, err := quoteQualifiedIdentifier(s.dialect, "shippings")
 	if err != nil {
 		shippingsTable = `"shippings"`
@@ -773,30 +777,48 @@ func (s *ShipmentDB) buildActiveShippingExistsClause(shipmentRef string) string 
 	if err != nil {
 		statusesTable = `"shipping_statuses"`
 	}
+	tripsTable, err := quoteQualifiedIdentifier(s.dialect, "trips")
+	if err != nil {
+		tripsTable = `"trips"`
+	}
 	shipmentIDCol, _ := quoteIdentifier(s.dialect, "shipment_id")
+	tripIDCol, _ := quoteIdentifier(s.dialect, "trip_id")
 	lastStatusCol, _ := quoteIdentifier(s.dialect, "last_status_id")
 	statusIDCol, _ := quoteIdentifier(s.dialect, "id")
 	labelCol, _ := quoteIdentifier(s.dialect, "label")
+	userIDCol, _ := quoteIdentifier(s.dialect, "user_id")
+	idCol, _ := quoteIdentifier(s.dialect, "id")
+
+	passengerFilter := ""
+	if passengerUserID > 0 {
+		passengerFilter = fmt.Sprintf(`
+      AND t.%s <> %d`, userIDCol, passengerUserID)
+	}
 
 	return fmt.Sprintf(`EXISTS (
     SELECT 1
     FROM %s AS sh
     JOIN %s AS ss ON ss.%s = sh.%s
+    JOIN %s AS t ON t.%s = sh.%s
     WHERE sh.%s = %s
-      AND UPPER(ss.%s) NOT IN (%s)
+      AND UPPER(ss.%s) NOT IN (%s)%s
 )`,
 		shippingsTable,
 		statusesTable,
 		statusIDCol,
 		lastStatusCol,
+		tripsTable,
+		idCol,
+		tripIDCol,
 		shipmentIDCol,
 		shipmentRef,
 		labelCol,
 		excludedShippingStatusLabelsSQL(),
+		passengerFilter,
 	)
 }
 
-func (s *ShipmentDB) buildAcceptedShippingAskExistsClause(shipmentRef string) string {
+func (s *ShipmentDB) buildAcceptedShippingAskExistsClause(shipmentRef string, passengerUserID int64) string {
 	asksTable, err := quoteQualifiedIdentifier(s.dialect, "shipping_asks")
 	if err != nil {
 		asksTable = `"shipping_asks"`
@@ -805,31 +827,49 @@ func (s *ShipmentDB) buildAcceptedShippingAskExistsClause(shipmentRef string) st
 	if err != nil {
 		askStatusesTable = `"shipping_ask_statuses"`
 	}
+	tripsTable, err := quoteQualifiedIdentifier(s.dialect, "trips")
+	if err != nil {
+		tripsTable = `"trips"`
+	}
 	shipmentIDCol, _ := quoteIdentifier(s.dialect, "shipment_id")
+	tripIDCol, _ := quoteIdentifier(s.dialect, "trip_id")
 	lastStatusCol, _ := quoteIdentifier(s.dialect, "last_status_id")
 	statusIDCol, _ := quoteIdentifier(s.dialect, "id")
 	labelCol, _ := quoteIdentifier(s.dialect, "label")
+	userIDCol, _ := quoteIdentifier(s.dialect, "user_id")
+	idCol, _ := quoteIdentifier(s.dialect, "id")
+
+	passengerFilter := ""
+	if passengerUserID > 0 {
+		passengerFilter = fmt.Sprintf(`
+      AND t.%s <> %d`, userIDCol, passengerUserID)
+	}
 
 	return fmt.Sprintf(`EXISTS (
     SELECT 1
     FROM %s AS sa
     JOIN %s AS sas ON sas.%s = sa.%s
+    JOIN %s AS t ON t.%s = sa.%s
     WHERE sa.%s = %s
-      AND UPPER(sas.%s) = 'ACCEPTED'
+      AND UPPER(sas.%s) = 'ACCEPTED'%s
 )`,
 		asksTable,
 		askStatusesTable,
 		statusIDCol,
 		lastStatusCol,
+		tripsTable,
+		idCol,
+		tripIDCol,
 		shipmentIDCol,
 		shipmentRef,
 		labelCol,
+		passengerFilter,
 	)
 }
 
 // buildNearbyQueryHaversine is the legacy approach for separate float lat/lng
 // columns (MySQL without spatial extensions).
-func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit int) (string, []any) {
+func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit int, passengerUserID int64) (string, []any) {
 	args := newPlaceholderArgs(s.dialect)
 	latRef := coordinateExpression(s.dialect, "s."+s.latColumn)
 	lngRef := coordinateExpression(s.dialect, "s."+s.lngColumn)
@@ -856,7 +896,7 @@ func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit
 
 	minLat, maxLat, minLng, maxLng := shipmentBoundingBox(lat, lng, radiusKm)
 	shipmentRef := "s." + s.idColumn
-	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef)
+	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID)
 	query := fmt.Sprintf(`
 SELECT *
 FROM (
