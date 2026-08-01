@@ -54,7 +54,7 @@ func (p *NearbyProcessor) ProcessLocationUpdate(ctx context.Context, session *Se
 
 	switch nearbyRole(req.Type) {
 	case "sender":
-		return p.searchDrivers(ctx, req)
+		return p.searchDrivers(ctx, session, req)
 	case "passenger":
 		return p.searchShipments(ctx, session, req)
 	default:
@@ -63,14 +63,18 @@ func (p *NearbyProcessor) ProcessLocationUpdate(ctx context.Context, session *Se
 	}
 }
 
-func (p *NearbyProcessor) searchDrivers(ctx context.Context, req model.NearbyShipmentRequest) (any, error) {
+func (p *NearbyProcessor) searchDrivers(ctx context.Context, session *Session, req model.NearbyShipmentRequest) (any, error) {
 	if p.drivers == nil {
 		wsplatform.RecordError(p.channel, "driver_location_disabled")
 		return nil, ErrDriverDisabled
 	}
+	excludeUserID := int64(0)
+	if session != nil {
+		excludeUserID = session.UserID()
+	}
 	var result any
 	err := p.driverCB.Execute(func() (any, error) {
-		resp, err := p.drivers.SearchNearby(ctx, req.Lat, req.Lng, req.RadiusKm, req.Limit)
+		resp, err := p.drivers.SearchNearby(ctx, req.Lat, req.Lng, req.RadiusKm, req.Limit, excludeUserID)
 		if err != nil {
 			return nil, err
 		}

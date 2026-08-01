@@ -104,7 +104,9 @@ func (s *DriverService) UpdatePresence(ctx context.Context, userID string, lat, 
 	})
 }
 
-func (s *DriverService) SearchNearby(ctx context.Context, lat, lng, radiusKm float64, limit int) (*model.NearbyDriverResponse, error) {
+// SearchNearby returns live passengers near lat/lng for the sender map.
+// excludeUserID (when > 0) hides the requesting sender from their own results.
+func (s *DriverService) SearchNearby(ctx context.Context, lat, lng, radiusKm float64, limit int, excludeUserID int64) (*model.NearbyDriverResponse, error) {
 	if s == nil || s.redis == nil || s.geoKey == "" {
 		return nil, ErrDriverLocationDisabled
 	}
@@ -121,7 +123,7 @@ func (s *DriverService) SearchNearby(ctx context.Context, lat, lng, radiusKm flo
 		limit = maxShipmentLimit
 	}
 
-	// Over-fetch so visible_on_map filtering still has enough candidates.
+	// Over-fetch so visible_on_map / self filtering still has enough candidates.
 	candidateLimit := limit * 3
 	if candidateLimit > maxShipmentLimit {
 		candidateLimit = maxShipmentLimit
@@ -135,6 +137,9 @@ func (s *DriverService) SearchNearby(ctx context.Context, lat, lng, radiusKm flo
 	drivers := make([]model.DriverLocation, 0, len(states))
 	for _, state := range states {
 		driverID, ok := parseDriverUserID(state.ID)
+		if ok && excludeUserID > 0 && driverID == excludeUserID {
+			continue
+		}
 		driver := model.DriverLocation{
 			ID:          state.ID,
 			Lat:         state.Lat,

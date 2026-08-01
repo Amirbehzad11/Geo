@@ -167,7 +167,7 @@ func (h *ShipmentWSHandler) process(session *wsnearby.Session, parent context.Co
 			session.WriteError("DRIVER_LOCATION_DISABLED", service.ErrDriverLocationDisabled.Error())
 			return
 		}
-		result, err := h.driverSvc.SearchNearby(ctx, req.Lat, req.Lng, req.RadiusKm, req.Limit)
+		result, err := h.driverSvc.SearchNearby(ctx, req.Lat, req.Lng, req.RadiusKm, req.Limit, session.UserID())
 		if err != nil {
 			if errors.Is(err, service.ErrDriverLocationDisabled) {
 				session.WriteError("DRIVER_LOCATION_DISABLED", err.Error())
