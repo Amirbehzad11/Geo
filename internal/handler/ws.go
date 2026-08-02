@@ -85,6 +85,7 @@ type WSHandler struct {
 	hub         *ws.Hub
 	authz       TripAuthorizer
 	requireAuth bool
+	auth        middleware.WSAuthOptions
 }
 
 // NewWSHandler creates a WSHandler backed by the given hub.
@@ -93,6 +94,13 @@ func NewWSHandler(hub *ws.Hub, requireAuth bool, authorizers ...TripAuthorizer) 
 	if len(authorizers) > 0 {
 		h.authz = authorizers[0]
 	}
+	return h
+}
+
+// WithWSAuth configures Bearer/API-key validation for the trip WebSocket upgrade.
+// Needed because the global Auth middleware skips /ws/* paths.
+func (h *WSHandler) WithWSAuth(opts middleware.WSAuthOptions) *WSHandler {
+	h.auth = opts
 	return h
 }
 
@@ -120,6 +128,22 @@ func (h *WSHandler) HandleConnection(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, "INVALID_TRIP_ID", "trip id must be a positive integer")
 		return
 	}
+
+	// Global Auth middleware skips /ws/* — authenticate the upgrade here.
+	authOpts := h.auth
+	authOpts.RequireAuth = h.requireAuth
+	authResult, ok := middleware.AuthenticateWebSocketUpgrade(c.Request, authOpts)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or missing credentials")
+		return
+	}
+	if authResult.Method == "jwt" && authResult.UserID > 0 {
+		middleware.SetAuthenticatedJWT(c, authResult.UserID)
+	}
+	if authResult.Method == "api_key" {
+		middleware.SetAuthenticatedAPIKey(c)
+	}
+
 	if !h.authorizeTripRead(c, tripIDNum) {
 		return
 	}

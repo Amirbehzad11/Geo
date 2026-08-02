@@ -91,6 +91,17 @@ func AuthenticatedWithAPIKey(c *gin.Context) bool {
 	return ok && v == authMethodKeyValue
 }
 
+// SetAuthenticatedJWT stores a validated JWT identity on the gin context.
+func SetAuthenticatedJWT(c *gin.Context, userID int64) {
+	c.Set(authMethodKey, authMethodJWT)
+	c.Set(authUserIDKey, userID)
+}
+
+// SetAuthenticatedAPIKey marks the request as authenticated via API key.
+func SetAuthenticatedAPIKey(c *gin.Context) {
+	c.Set(authMethodKey, authMethodKeyValue)
+}
+
 func bearerToken(c *gin.Context) string {
 	auth := strings.TrimSpace(c.GetHeader("Authorization"))
 	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {

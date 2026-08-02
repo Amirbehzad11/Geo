@@ -138,6 +138,12 @@ func main() {
 	if shipmentDB != nil {
 		wsH = handler.NewWSHandler(hub, cfg.WebSocketTripAuthEnabled, shipmentDB)
 	}
+	wsH = wsH.WithWSAuth(middleware.WSAuthOptions{
+		RequireAuth:  cfg.WebSocketTripAuthEnabled,
+		APIKey:       cfg.APIKey,
+		JWTSecret:    cfg.JWTSecret,
+		JWTAlgorithm: cfg.JWTAlgorithm,
+	})
 	shipmentWSH := handler.NewShipmentWSHandler(shipmentSvc, driverSvc, shipmentWSConfig(cfg), middleware.WSAuthOptions{
 		RequireAuth:  cfg.WSShipmentAuthRequired,
 		APIKey:       cfg.APIKey,
