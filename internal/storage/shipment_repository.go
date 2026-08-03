@@ -19,8 +19,6 @@ import (
 )
 
 const shipmentEarthRadiusKm = 6371.0
-// nearbyShipmentStatusID is Laravel shipment_statuses.id for ACCEPTED (تایید شده).
-const nearbyShipmentStatusID = 5
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -693,7 +691,6 @@ func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit i
 	args := []any{lat, lng, radiusKm * 1000.0, limit} // $1 $2 $3 $4
 
 	locCol := s.locationColumn // e.g. "start_location" (already quoted)
-	lastStatusCol := shipmentLastStatusColumn(s.dialect)
 
 	endCols := ""
 	if s.endLocationColumn != "" {
@@ -714,38 +711,38 @@ func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit i
 
 	shipmentRef := "s." + s.idColumn
 	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID)
+	statusFilter := s.nearbyStatusEligibilityFilter("s", passengerUserID)
 
 	query := fmt.Sprintf(`
-SELECT s.%[8]s AS id,
-    %[9]s AS vehicle_allowed,
-    s.%[11]s AS visible_on_map,
-    s.%[12]s AS shipment_code,
-    s.%[13]s AS shipping_type_id,
+SELECT s.%[7]s AS id,
+    %[8]s AS vehicle_allowed,
+    s.%[10]s AS visible_on_map,
+    s.%[11]s AS shipment_code,
+    s.%[12]s AS shipping_type_id,
     ST_Y(%[1]s::geometry)::float8 AS start_lat,
     ST_X(%[1]s::geometry)::float8 AS start_lng%[2]s,
-    ST_Distance(%[1]s::geography, ST_MakePoint($2, $1)::geography) / 1000.0 AS distance_km%[4]s%[14]s%[10]s
-FROM %[3]s AS s%[5]s%[15]s
+    ST_Distance(%[1]s::geography, ST_MakePoint($2, $1)::geography) / 1000.0 AS distance_km%[4]s%[13]s%[9]s
+FROM %[3]s AS s%[5]s%[14]s
 WHERE %[1]s IS NOT NULL
-  AND %[6]s = %[7]d
-  AND ST_DWithin(%[1]s::geography, ST_MakePoint($2, $1)::geography, $3)%[16]s
+  AND (%[6]s)
+  AND ST_DWithin(%[1]s::geography, ST_MakePoint($2, $1)::geography, $3)%[15]s
 ORDER BY distance_km ASC
 LIMIT $4`,
-		locCol,
-		endCols,
-		s.table,
-		s.contentImageSelect, // [4]
-		contentJoin,          // [5]
-		lastStatusCol,
-		nearbyShipmentStatusID,
-		s.idColumn,
-		s.vehicleAllowedSelectExpr(),
-		s.shipmentImagesSelect,
-		s.visibleOnMapCol,
-		s.shipmentCodeCol,
-		s.shippingTypeIDCol,
-		s.packageDetailSelect, // [14]
-		detailJoins,           // [15]
-		mapExcludeFilters,     // [16]
+		locCol,                    // [1]
+		endCols,                   // [2]
+		s.table,                   // [3]
+		s.contentImageSelect,      // [4]
+		contentJoin,               // [5]
+		statusFilter,              // [6]
+		s.idColumn,                // [7]
+		s.vehicleAllowedSelectExpr(), // [8]
+		s.shipmentImagesSelect,    // [9]
+		s.visibleOnMapCol,         // [10]
+		s.shipmentCodeCol,         // [11]
+		s.shippingTypeIDCol,       // [12]
+		s.packageDetailSelect,     // [13]
+		detailJoins,               // [14]
+		mapExcludeFilters,         // [15]
 	)
 
 	return query, args
@@ -753,6 +750,81 @@ LIMIT $4`,
 
 func excludedShippingStatusLabelsSQL() string {
 	return "'" + strings.Join(excludedShippingStatusLabels, "','") + "'"
+}
+
+// nearbyStatusEligibilityFilter keeps open ACCEPTED packages visible to everyone,
+// and also keeps the authenticated passenger's own in-progress shipping
+// (e.g. PENDING_PAYMENT / WAITING) visible so they can continue on the map.
+// Other passengers still cannot see claimed packages because status leaves ACCEPTED
+// and the own-shipping clause is scoped to passengerUserID.
+func (s *ShipmentDB) nearbyStatusEligibilityFilter(shipmentAlias string, passengerUserID int64) string {
+	statusesTable, err := quoteQualifiedIdentifier(s.dialect, "shipment_statuses")
+	if err != nil {
+		statusesTable = `"shipment_statuses"`
+	}
+	shippingsTable, err := quoteQualifiedIdentifier(s.dialect, "shippings")
+	if err != nil {
+		shippingsTable = `"shippings"`
+	}
+	shippingStatusesTable, err := quoteQualifiedIdentifier(s.dialect, "shipping_statuses")
+	if err != nil {
+		shippingStatusesTable = `"shipping_statuses"`
+	}
+	tripsTable, err := quoteQualifiedIdentifier(s.dialect, "trips")
+	if err != nil {
+		tripsTable = `"trips"`
+	}
+
+	idCol, _ := quoteIdentifier(s.dialect, "id")
+	labelCol, _ := quoteIdentifier(s.dialect, "label")
+	lastStatusCol, _ := quoteIdentifier(s.dialect, "last_status_id")
+	shipmentIDCol, _ := quoteIdentifier(s.dialect, "shipment_id")
+	tripIDCol, _ := quoteIdentifier(s.dialect, "trip_id")
+	userIDCol, _ := quoteIdentifier(s.dialect, "user_id")
+
+	acceptedClause := fmt.Sprintf(`EXISTS (
+    SELECT 1
+    FROM %s AS nss
+    WHERE nss.%s = %s.%s
+      AND UPPER(nss.%s) = 'ACCEPTED'
+)`,
+		statusesTable,
+		idCol,
+		shipmentAlias,
+		lastStatusCol,
+		labelCol,
+	)
+
+	if passengerUserID <= 0 {
+		return acceptedClause
+	}
+
+	ownShippingClause := fmt.Sprintf(`EXISTS (
+    SELECT 1
+    FROM %s AS osh
+    JOIN %s AS oss ON oss.%s = osh.%s
+    JOIN %s AS ot ON ot.%s = osh.%s
+    WHERE osh.%s = %s.%s
+      AND ot.%s = %d
+      AND UPPER(oss.%s) NOT IN (%s)
+)`,
+		shippingsTable,
+		shippingStatusesTable,
+		idCol,
+		lastStatusCol,
+		tripsTable,
+		idCol,
+		tripIDCol,
+		shipmentIDCol,
+		shipmentAlias,
+		idCol,
+		userIDCol,
+		passengerUserID,
+		labelCol,
+		excludedShippingStatusLabelsSQL(),
+	)
+
+	return acceptedClause + "\n  OR " + ownShippingClause
 }
 
 // nearbyMapExcludeFilters hides shipments that already have an active shipping
@@ -873,7 +945,6 @@ func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit
 	args := newPlaceholderArgs(s.dialect)
 	latRef := coordinateExpression(s.dialect, "s."+s.latColumn)
 	lngRef := coordinateExpression(s.dialect, "s."+s.lngColumn)
-	lastStatusCol := shipmentLastStatusColumn(s.dialect)
 
 	distanceExpr := fmt.Sprintf(
 		`%[1]f * 2 * ASIN(LEAST(1, SQRT(POWER(SIN(RADIANS((%[2]s - %[3]s) / 2)), 2) + COS(RADIANS(%[4]s)) * COS(RADIANS(%[2]s)) * POWER(SIN(RADIANS((%[5]s - %[6]s) / 2)), 2))))`,
@@ -897,6 +968,7 @@ func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit
 	minLat, maxLat, minLng, maxLng := shipmentBoundingBox(lat, lng, radiusKm)
 	shipmentRef := "s." + s.idColumn
 	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID)
+	statusFilter := s.nearbyStatusEligibilityFilter("s", passengerUserID)
 	query := fmt.Sprintf(`
 SELECT *
 FROM (
@@ -911,7 +983,7 @@ FROM (
     FROM %s AS s%s%s
     WHERE %s IS NOT NULL
       AND %s IS NOT NULL
-      AND %s = %d
+      AND (%s)
       AND %s BETWEEN %s AND %s
       AND %s BETWEEN %s AND %s%s
 ) AS nearby
@@ -934,8 +1006,7 @@ LIMIT %s`,
 		detailJoins,
 		latRef,
 		lngRef,
-		lastStatusCol,
-		nearbyShipmentStatusID,
+		statusFilter,
 		latRef,
 		args.Add(minLat),
 		args.Add(maxLat),
@@ -958,13 +1029,6 @@ func (s *ShipmentDB) vehicleAllowedSelectExpr() string {
 		return "NULL"
 	}
 	return "s." + s.vehicleAllowedCol
-}
-
-func shipmentLastStatusColumn(dialect string) string {
-	if dialect == "postgres" {
-		return `s."last_status_id"`
-	}
-	return "s.`last_status_id`"
 }
 
 func shipmentBoundingBox(lat, lng, radiusKm float64) (minLat, maxLat, minLng, maxLng float64) {
@@ -1014,15 +1078,21 @@ func buildShipmentImagesSelect(dialect, table, shipmentIDColumn, imageColumn, im
 
 // buildNearbyPackageDetailSQL returns SELECT fragments and JOINs for package
 // content, dimensions, flags, and related titles used by nearby passenger.
+// Both domestic and international shipping_type values are returned; priority
+// (normal/urgent) is exposed so the map can style urgent package markers.
 func buildNearbyPackageDetailSQL(dialect string) (selectSQL, joinSQL string) {
 	pt := quotedTable(dialect, "package_types")
 	st := quotedTable(dialect, "shipping_types")
+	sp := quotedTable(dialect, "shipping_priorities")
 	if dialect == "postgres" {
 		selectSQL = `,
     s."content_type_id" AS content_type_id,
     s."package_type_id" AS package_type_id,
     COALESCE(pt."title", '') AS package_type_title,
     COALESCE(st."title", '') AS shipping_type_title,
+    s."shipping_priority_id" AS shipping_priority_id,
+    COALESCE(sp."title", '') AS shipping_priority_title,
+    COALESCE(sp."label", '') AS shipping_priority_label,
     s."package_weight" AS package_weight,
     s."package_height" AS package_height,
     s."package_width" AS package_width,
@@ -1035,9 +1105,11 @@ func buildNearbyPackageDetailSQL(dialect string) (selectSQL, joinSQL string) {
     COALESCE(s."description", '') AS description`
 		joinSQL = fmt.Sprintf(
 			`LEFT JOIN %s AS pt ON pt."id" = s."package_type_id"
-LEFT JOIN %s AS st ON st."id" = s."shipping_type_id"`,
+LEFT JOIN %s AS st ON st."id" = s."shipping_type_id"
+LEFT JOIN %s AS sp ON sp."id" = s."shipping_priority_id"`,
 			pt,
 			st,
+			sp,
 		)
 		return selectSQL, joinSQL
 	}
@@ -1046,6 +1118,9 @@ LEFT JOIN %s AS st ON st."id" = s."shipping_type_id"`,
     s.package_type_id AS package_type_id,
     COALESCE(pt.title, '') AS package_type_title,
     COALESCE(st.title, '') AS shipping_type_title,
+    s.shipping_priority_id AS shipping_priority_id,
+    COALESCE(sp.title, '') AS shipping_priority_title,
+    COALESCE(sp.label, '') AS shipping_priority_label,
     s.package_weight AS package_weight,
     s.package_height AS package_height,
     s.package_width AS package_width,
@@ -1058,9 +1133,11 @@ LEFT JOIN %s AS st ON st."id" = s."shipping_type_id"`,
     COALESCE(s.description, '') AS description`
 	joinSQL = fmt.Sprintf(
 		`LEFT JOIN %s AS pt ON pt.id = s.package_type_id
-LEFT JOIN %s AS st ON st.id = s.shipping_type_id`,
+LEFT JOIN %s AS st ON st.id = s.shipping_type_id
+LEFT JOIN %s AS sp ON sp.id = s.shipping_priority_id`,
 		pt,
 		st,
+		sp,
 	)
 	return selectSQL, joinSQL
 }

@@ -32,9 +32,9 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	if !strings.Contains(query, `ST_DWithin`) {
 		t.Fatalf("expected ST_DWithin in PostGIS query, got:\n%s", query)
 	}
-	// Only active/searchable shipments should be returned.
-	if !strings.Contains(query, `AND s."last_status_id" = 5`) {
-		t.Fatalf("expected last_status_id filter in PostGIS query, got:\n%s", query)
+	// Only ACCEPTED open packages, or the passenger's own in-progress shipping.
+	if !strings.Contains(query, `UPPER(nss."label") = 'ACCEPTED'`) {
+		t.Fatalf("expected ACCEPTED shipment status filter in PostGIS query, got:\n%s", query)
 	}
 	// Shipments with active shipping or ACCEPTED shipping_ask stay off the map.
 	if !strings.Contains(query, `FROM "shippings" AS sh`) {
@@ -43,7 +43,7 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	if !strings.Contains(query, `JOIN "trips" AS t ON t."id" = sh."trip_id"`) {
 		t.Fatalf("expected trips join in active shipping exclusion, got:\n%s", query)
 	}
-	if !strings.Contains(query, `NOT IN ('CANCELED','DELIVERED')`) {
+	if !strings.Contains(query, `NOT IN ('CANCELED','CANCELLED','DELIVERED')`) {
 		t.Fatalf("expected shipping status exclusion labels in PostGIS query, got:\n%s", query)
 	}
 	if !strings.Contains(query, `FROM "shipping_asks" AS sa`) {
@@ -84,6 +84,10 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 		`content_type_id`,
 		`package_type_title`,
 		`shipping_type_title`,
+		`shipping_priority_id`,
+		`shipping_priority_title`,
+		`shipping_priority_label`,
+		`shipping_priorities`,
 	} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("expected package detail field %q in PostGIS query, got:\n%s", want, query)
@@ -200,8 +204,8 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	if strings.Contains(query, "$1") {
 		t.Fatalf("MySQL query must not contain postgres placeholders: %s", query)
 	}
-	if !strings.Contains(query, "AND s.`last_status_id` = 5") {
-		t.Fatalf("expected last_status_id filter in MySQL query, got:\n%s", query)
+	if !strings.Contains(query, "UPPER(nss.`label`) = 'ACCEPTED'") {
+		t.Fatalf("expected ACCEPTED shipment status filter in MySQL query, got:\n%s", query)
 	}
 	if !strings.Contains(query, "FROM `shippings` AS sh") {
 		t.Fatalf("expected active shipping exclusion in MySQL query, got:\n%s", query)
@@ -243,6 +247,12 @@ func TestShipmentNearbyQueryKeepsOwnAcceptedDelivery(t *testing.T) {
 	query, _ := db.buildNearbyQuery(35.7, 51.4, 2, 50, 42)
 	if !strings.Contains(query, `AND t."user_id" <> 42`) {
 		t.Fatalf("expected passenger exception filter for user 42, got:\n%s", query)
+	}
+	if !strings.Contains(query, `AND ot."user_id" = 42`) {
+		t.Fatalf("expected own in-progress shipping eligibility for user 42, got:\n%s", query)
+	}
+	if !strings.Contains(query, `FROM "shippings" AS osh`) {
+		t.Fatalf("expected own shipping eligibility subquery, got:\n%s", query)
 	}
 }
 

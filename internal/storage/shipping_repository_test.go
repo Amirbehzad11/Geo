@@ -27,7 +27,7 @@ func TestBuildLatestActiveShippingDestinationsQuery(t *testing.T) {
 		`sm."end_city_id"`,
 		`sm."end_address"`,
 		`AS destination`,
-		`NOT IN ('CANCELED','DELIVERED')`,
+		`NOT IN ('CANCELED','CANCELLED','DELIVERED')`,
 		`ORDER BY t."user_id" ASC, sh."id" DESC`,
 	} {
 		if !strings.Contains(query, want) {

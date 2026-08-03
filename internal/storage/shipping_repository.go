@@ -8,7 +8,7 @@ import (
 	"geo-service/internal/model"
 )
 
-var excludedShippingStatusLabels = []string{"CANCELED", "DELIVERED"}
+var excludedShippingStatusLabels = []string{"CANCELED", "CANCELLED", "DELIVERED"}
 
 // FindLatestActiveShippingDestinationsByUserIDs returns destination, trip_id,
 // vehicle_type_id, and vehicle_type_image of the latest in-progress shipping
