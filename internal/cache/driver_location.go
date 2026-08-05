@@ -61,12 +61,29 @@ func (r *Redis) FindNearbyDrivers(ctx context.Context, geoKey string, lat, lng, 
 	for _, member := range members {
 		state, ok := r.getDriverLocationState(ctx, member.ID)
 		if !ok {
+			// The location hash already expired (driver stopped broadcasting)
+			// but the GEO member outlives it since GEOADD carries no TTL.
+			// Self-heal by dropping it here so the geo set doesn't grow
+			// unbounded with stale entries.
+			r.client.ZRem(ctx, geoKey, member.ID)
 			continue
 		}
 		state.DistanceKm = member.DistanceKm
 		out = append(out, state)
 	}
 	return out, nil
+}
+
+// RemoveDriverLocation immediately removes a driver from the geo index and
+// drops its location hash, instead of waiting for driverLocationTTL to
+// expire. Used when a passenger explicitly leaves the map (navigates away,
+// hides the tab, or closes it) so senders stop seeing them right away.
+func (r *Redis) RemoveDriverLocation(ctx context.Context, geoKey, driverID string) error {
+	pipe := r.client.TxPipeline()
+	pipe.ZRem(ctx, geoKey, driverID)
+	pipe.Del(ctx, DriverLocationKey(driverID))
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (r *Redis) getDriverLocationState(ctx context.Context, driverID string) (DriverLocationState, bool) {

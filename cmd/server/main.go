@@ -209,6 +209,7 @@ func main() {
 	r.POST("/route", routeH.Calculate)
 	r.POST("/route/waypoints", multiRouteH.Calculate)
 	r.POST("/driver-location", driverH.UpdateLocation)
+	r.POST("/driver-location/offline", driverH.GoOffline)
 
 	gps := r.Group("/gps")
 	{

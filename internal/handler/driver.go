@@ -63,6 +63,39 @@ func (h *DriverHandler) UpdateLocation(c *gin.Context) {
 	response.OK(c, result)
 }
 
+// GoOffline removes the caller's live location right away, instead of
+// waiting for driverLocationTTL to expire. Called when a passenger leaves
+// the map (navigates away, hides the tab, or closes it) so senders stop
+// seeing their stale position immediately.
+func (h *DriverHandler) GoOffline(c *gin.Context) {
+	if h.svc == nil {
+		response.Fail(c, http.StatusServiceUnavailable, "DRIVER_LOCATION_DISABLED", "driver location service is not configured")
+		return
+	}
+
+	var req model.DriverLocationRequest
+	_ = c.ShouldBindJSON(&req)
+
+	driverID, ok := resolveAuthenticatedDriverID(c, req.DriverID.String())
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), driverLocationTimeout)
+	defer cancel()
+
+	if err := h.svc.RemoveLocation(ctx, driverID); err != nil {
+		status, code, message := mapServiceError(err)
+		if status >= 500 {
+			slog.Error("driver go-offline failed", "err", err, "driver_id", driverID)
+		}
+		response.Fail(c, status, code, message)
+		return
+	}
+
+	response.OK(c, gin.H{"type": "driver.location.removed", "driver_id": driverID})
+}
+
 // resolveAuthenticatedDriverID picks the Redis member id for a location write.
 // JWT clients: always use token user_id/sub (body driver_id is ignored).
 // API-key clients (simulators): require explicit body driver_id.

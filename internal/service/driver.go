@@ -94,6 +94,22 @@ func (s *DriverService) UpdateLocation(ctx context.Context, req model.DriverLoca
 	}, nil
 }
 
+// RemoveLocation drops a driver from the geo index and location hash right
+// away, instead of waiting for the location hash TTL to expire. Called when
+// a passenger explicitly leaves the map.
+func (s *DriverService) RemoveLocation(ctx context.Context, driverID string) error {
+	if s == nil || s.redis == nil || s.geoKey == "" {
+		return ErrDriverLocationDisabled
+	}
+
+	driverID = strings.TrimSpace(driverID)
+	if driverID == "" {
+		return ErrDriverIDRequired
+	}
+
+	return s.redis.RemoveDriverLocation(ctx, s.geoKey, driverID)
+}
+
 // UpdatePresence stores a user's live map position (used by POST /gps/update without trip_id).
 func (s *DriverService) UpdatePresence(ctx context.Context, userID string, lat, lng float64, timestampMs int64) (any, error) {
 	return s.UpdateLocation(ctx, model.DriverLocationRequest{
