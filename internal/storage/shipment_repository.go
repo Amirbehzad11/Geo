@@ -491,6 +491,71 @@ LIMIT 1`,
 	return s.exists(ctx, query, args.Values()...)
 }
 
+// UsersShareActiveShipping reports whether two users are counterparts on the
+// same shipping: one owns the trip while the other is the sender or receiver of
+// the shipment being carried. It is the ACL for reading someone's live
+// position — a sender may follow the passenger carrying their package, and the
+// passenger may follow the sender, but nobody else may.
+func (s *ShipmentDB) UsersShareActiveShipping(ctx context.Context, viewerID, targetID int64) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("shipment db is not configured")
+	}
+	if viewerID <= 0 || targetID <= 0 {
+		return false, nil
+	}
+	if viewerID == targetID {
+		return true, nil
+	}
+
+	tripsTable, err := quoteQualifiedIdentifier(s.dialect, "trips")
+	if err != nil {
+		return false, err
+	}
+	shippingsTable, err := quoteQualifiedIdentifier(s.dialect, "shippings")
+	if err != nil {
+		return false, err
+	}
+	shipmentsTable := s.table
+	idCol, _ := quoteIdentifier(s.dialect, "id")
+	userIDCol, _ := quoteIdentifier(s.dialect, "user_id")
+	receiverIDCol, _ := quoteIdentifier(s.dialect, "receiver_id")
+	tripIDCol, _ := quoteIdentifier(s.dialect, "trip_id")
+	shipmentIDCol, _ := quoteIdentifier(s.dialect, "shipment_id")
+
+	args := newPlaceholderArgs(s.dialect)
+	targetTripArg := args.Add(targetID)
+	viewerShipmentArg := args.Add(viewerID)
+	viewerTripArg := args.Add(viewerID)
+	targetShipmentArg := args.Add(targetID)
+
+	query := fmt.Sprintf(`
+SELECT 1
+WHERE EXISTS (
+    SELECT 1
+    FROM %[1]s AS sh
+    JOIN %[2]s AS t  ON t.%[4]s  = sh.%[6]s
+    JOIN %[3]s AS sp ON sp.%[4]s = sh.%[7]s
+    WHERE (t.%[5]s = %[9]s  AND (sp.%[5]s = %[10]s OR sp.%[8]s = %[10]s))
+       OR (t.%[5]s = %[11]s AND (sp.%[5]s = %[12]s OR sp.%[8]s = %[12]s))
+)
+LIMIT 1`,
+		shippingsTable,
+		tripsTable,
+		shipmentsTable,
+		idCol,
+		userIDCol,
+		tripIDCol,
+		shipmentIDCol,
+		receiverIDCol,
+		targetTripArg,
+		viewerShipmentArg,
+		viewerTripArg,
+		targetShipmentArg,
+	)
+
+	return s.exists(ctx, query, args.Values()...)
+}
+
 func (s *ShipmentDB) exists(ctx context.Context, query string, args ...any) (bool, error) {
 	var one int
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&one)
@@ -710,7 +775,7 @@ func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit i
 	}
 
 	shipmentRef := "s." + s.idColumn
-	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID)
+	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID) + s.nearbyReleaseTimeFilter("s")
 	statusFilter := s.nearbyStatusEligibilityFilter("s", passengerUserID)
 
 	query := fmt.Sprintf(`
@@ -830,14 +895,40 @@ func (s *ShipmentDB) nearbyStatusEligibilityFilter(shipmentAlias string, passeng
 // nearbyMapExcludeFilters hides shipments that already have an active shipping
 // or an ACCEPTED shipping_ask — those must not appear on the nearby passenger map.
 // When passengerUserID > 0, the passenger's own accepted ask / active shipping
-// is kept so they can resume navigation after leaving the map.
+// is kept so they can resume navigation after leaving the map, and shipments the
+// passenger created themselves (as sender) are hidden — you can't carry your own package.
 func (s *ShipmentDB) nearbyMapExcludeFilters(shipmentRef string, passengerUserID int64) string {
 	return fmt.Sprintf(`
   AND NOT %s
-  AND NOT %s`,
+  AND NOT %s%s`,
 		s.buildActiveShippingExistsClause(shipmentRef, passengerUserID),
 		s.buildAcceptedShippingAskExistsClause(shipmentRef, passengerUserID),
+		s.nearbyOwnCreatedExcludeFilter(passengerUserID),
 	)
+}
+
+// nearbyOwnCreatedExcludeFilter hides shipments the requesting passenger created
+// themselves (shipments.user_id = passengerUserID) from their own nearby feed.
+// Plain `<>` (not IS DISTINCT FROM) to stay portable across the postgres/mysql
+// dialects this repository supports — matches the passengerFilter convention
+// used by buildActiveShippingExistsClause above.
+func (s *ShipmentDB) nearbyOwnCreatedExcludeFilter(passengerUserID int64) string {
+	if passengerUserID <= 0 {
+		return ""
+	}
+	userIDCol, _ := quoteIdentifier(s.dialect, "user_id")
+	return fmt.Sprintf(`
+  AND s.%s <> %d`, userIDCol, passengerUserID)
+}
+
+// nearbyReleaseTimeFilter hides shipments whose release_time (شipments.release_time,
+// "تاریخ و ساعت انتشار") is set in the future — the sender scheduled the package to
+// publish later, so it must not appear on the nearby map until that time arrives.
+// A NULL release_time means "publish immediately", so it always stays visible.
+func (s *ShipmentDB) nearbyReleaseTimeFilter(alias string) string {
+	releaseTimeCol, _ := quoteIdentifier(s.dialect, "release_time")
+	return fmt.Sprintf(`
+  AND (%[1]s.%[2]s IS NULL OR %[1]s.%[2]s <= NOW())`, alias, releaseTimeCol)
 }
 
 func (s *ShipmentDB) buildActiveShippingExistsClause(shipmentRef string, passengerUserID int64) string {
@@ -967,7 +1058,7 @@ func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit
 
 	minLat, maxLat, minLng, maxLng := shipmentBoundingBox(lat, lng, radiusKm)
 	shipmentRef := "s." + s.idColumn
-	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID)
+	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID) + s.nearbyReleaseTimeFilter("s")
 	statusFilter := s.nearbyStatusEligibilityFilter("s", passengerUserID)
 	query := fmt.Sprintf(`
 SELECT *

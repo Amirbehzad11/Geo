@@ -31,6 +31,8 @@ func mapServiceError(err error) (status int, code string, message string) {
 		return http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error()
 	case errors.Is(err, service.ErrDriverLocationDisabled):
 		return http.StatusServiceUnavailable, "DRIVER_LOCATION_DISABLED", "driver location service is not configured"
+	case errors.Is(err, service.ErrDriverLocationNotFound):
+		return http.StatusNotFound, "NOT_FOUND", "no live location found for this user"
 	default:
 		return http.StatusInternalServerError, "INTERNAL_ERROR", "internal error; please retry"
 	}

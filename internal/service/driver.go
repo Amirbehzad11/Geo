@@ -15,6 +15,7 @@ import (
 var (
 	ErrDriverLocationDisabled = errors.New("driver location redis is not configured")
 	ErrDriverIDRequired       = errors.New("driver_id is required")
+	ErrDriverLocationNotFound = errors.New("no live location for this user")
 )
 
 const defaultDriverSearchRadiusKm = 20.0
@@ -118,6 +119,38 @@ func (s *DriverService) UpdatePresence(ctx context.Context, userID string, lat, 
 		Lng:         lng,
 		TimestampMs: timestampMs,
 	})
+}
+
+// GetPresence returns the live position a single user last reported, read from
+// the same Redis entry that POST /gps/update and POST /driver-location write.
+// Positions are tracked per user, not per trip, so this is what a sender
+// follows while their package is on the road.
+func (s *DriverService) GetPresence(ctx context.Context, userID string) (*model.DriverLocation, error) {
+	if s == nil || s.redis == nil {
+		return nil, ErrDriverLocationDisabled
+	}
+
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrDriverIDRequired
+	}
+
+	state, ok := s.redis.GetDriverLocation(ctx, userID)
+	if !ok {
+		return nil, ErrDriverLocationNotFound
+	}
+
+	location := &model.DriverLocation{
+		ID:          state.ID,
+		Lat:         state.Lat,
+		Lng:         state.Lng,
+		TimestampMs: state.TimestampMs,
+	}
+	if id, parsed := parseDriverUserID(state.ID); parsed {
+		location.DriverID = id
+	}
+
+	return location, nil
 }
 
 // SearchNearby returns live passengers near lat/lng for the sender map.

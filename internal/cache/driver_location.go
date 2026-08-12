@@ -86,6 +86,12 @@ func (r *Redis) RemoveDriverLocation(ctx context.Context, geoKey, driverID strin
 	return err
 }
 
+// GetDriverLocation returns the live position a driver/user last reported, as
+// long as it is still cached (see driverLocationTTL).
+func (r *Redis) GetDriverLocation(ctx context.Context, driverID string) (DriverLocationState, bool) {
+	return r.getDriverLocationState(ctx, driverID)
+}
+
 func (r *Redis) getDriverLocationState(ctx context.Context, driverID string) (DriverLocationState, bool) {
 	values, err := r.client.HGetAll(ctx, DriverLocationKey(driverID)).Result()
 	if err != nil || len(values) == 0 {
