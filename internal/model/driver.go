@@ -64,8 +64,10 @@ type DriverActiveJob struct {
 // DriverLatestTrip carries the minimal trip info shown on the sender map
 // when the driver has no active shipping.
 type DriverLatestTrip struct {
-	TripID      int64  `json:"trip_id"`
-	Destination string `json:"destination"`
+	TripID           int64  `json:"trip_id"`
+	Destination      string `json:"destination"`
+	VehicleTypeID    int64  `json:"vehicle_type_id,omitempty"`
+	VehicleTypeImage string `json:"vehicle_type_image,omitempty"`
 }
 
 type DriverLocation struct {

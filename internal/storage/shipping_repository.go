@@ -168,6 +168,7 @@ func (s *ShipmentDB) FindLatestTripDestinationsByUserIDs(ctx context.Context, us
 
 	tripsTable := quotedTable(s.dialect, "trips")
 	citiesTable := quotedTable(s.dialect, "cities")
+	vehicleTypesTable := quotedTable(s.dialect, "vehicle_types")
 	inList := strings.Join(placeholders, ", ")
 
 	var query string
@@ -176,6 +177,8 @@ func (s *ShipmentDB) FindLatestTripDestinationsByUserIDs(ctx context.Context, us
 SELECT DISTINCT ON (t."user_id")
     t."user_id"  AS user_id,
     t."id"       AS trip_id,
+    t."vehicle_type_id" AS vehicle_type_id,
+    COALESCE(vt."image", '') AS vehicle_type_image,
     COALESCE(
         NULLIF(TRIM(eci."title"), ''),
         NULLIF(TRIM(t."end_address"), ''),
@@ -183,12 +186,15 @@ SELECT DISTINCT ON (t."user_id")
     ) AS destination
 FROM %s AS t
 LEFT JOIN %s AS eci ON eci."id" = t."end_city_id"
+LEFT JOIN %s AS vt ON vt."id" = t."vehicle_type_id"
 WHERE t."user_id" IN (%s)
 ORDER BY t."user_id" ASC, t."id" DESC`,
-			tripsTable, citiesTable, inList)
+			tripsTable, citiesTable, vehicleTypesTable, inList)
 	} else {
 		query = fmt.Sprintf(`
 SELECT t.user_id AS user_id, t.id AS trip_id,
+    t.vehicle_type_id AS vehicle_type_id,
+    COALESCE(vt.image, '') AS vehicle_type_image,
     COALESCE(
         NULLIF(TRIM(eci.title), ''),
         NULLIF(TRIM(t.end_address), ''),
@@ -196,9 +202,10 @@ SELECT t.user_id AS user_id, t.id AS trip_id,
     ) AS destination
 FROM %s AS t
 LEFT JOIN %s AS eci ON eci.id = t.end_city_id
+LEFT JOIN %s AS vt ON vt.id = t.vehicle_type_id
 WHERE t.user_id IN (%s)
   AND t.id = (SELECT MAX(t2.id) FROM %s AS t2 WHERE t2.user_id = t.user_id)`,
-			tripsTable, citiesTable, inList, tripsTable)
+			tripsTable, citiesTable, vehicleTypesTable, inList, tripsTable)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args.Values()...)
@@ -221,8 +228,10 @@ WHERE t.user_id IN (%s)
 		}
 		dest := strings.TrimSpace(anyToString(item["destination"]))
 		out[userID] = model.DriverLatestTrip{
-			TripID:      tripID,
-			Destination: dest,
+			TripID:           tripID,
+			Destination:      dest,
+			VehicleTypeID:    anyToInt64(item["vehicle_type_id"]),
+			VehicleTypeImage: ResolvePublicMediaURL(s.mediaPublicBaseURL, anyToString(item["vehicle_type_image"])),
 		}
 	}
 	return out, nil

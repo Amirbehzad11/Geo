@@ -284,7 +284,13 @@ func (s *DriverService) attachActiveShippings(ctx context.Context, drivers []mod
 					// active.trip_id for trip fallback.
 					Destination: trip.Destination,
 					TripID:      trip.TripID,
-					LatestTrip:  &trip,
+					// VehicleTypeID/Image are also needed here: the sender-map "send
+					// request to passenger" flow reads active.vehicle_type_id to price
+					// the shipment, and most passengers only have a registered trip
+					// (no active shipping yet) when a sender first finds them.
+					VehicleTypeID:    trip.VehicleTypeID,
+					VehicleTypeImage: trip.VehicleTypeImage,
+					LatestTrip:       &trip,
 				}
 			}
 		}
