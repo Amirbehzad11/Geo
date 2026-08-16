@@ -256,6 +256,84 @@ func TestShipmentNearbyQueryKeepsOwnAcceptedDelivery(t *testing.T) {
 	}
 }
 
+// TestShipmentNearbyQueryExcludesOwnCreatedShipment ensures a passenger never
+// sees a shipment they created themselves (as sender) in their own nearby feed.
+func TestShipmentNearbyQueryExcludesOwnCreatedShipment(t *testing.T) {
+	pgDB := &ShipmentDB{
+		dialect:           "postgres",
+		table:             `"shipments"`,
+		idColumn:          `"id"`,
+		visibleOnMapCol:   `"visible_on_map"`,
+		shipmentCodeCol:   `"shipment_code"`,
+		shippingTypeIDCol: `"shipping_type_id"`,
+		locationColumn:    `"start_location"`,
+	}
+
+	query, _ := pgDB.buildNearbyQuery(35.7, 51.4, 2, 50, 42)
+	if !strings.Contains(query, `AND s."user_id" <> 42`) {
+		t.Fatalf("expected own-created shipment exclusion for user 42, got:\n%s", query)
+	}
+
+	anonymousQuery, _ := pgDB.buildNearbyQuery(35.7, 51.4, 2, 50, 0)
+	if strings.Contains(anonymousQuery, `s."user_id" <>`) {
+		t.Fatalf("did not expect own-created exclusion without a passenger id, got:\n%s", anonymousQuery)
+	}
+
+	mysqlDB := &ShipmentDB{
+		dialect:           "mysql",
+		table:             "`shipments`",
+		idColumn:          "`id`",
+		visibleOnMapCol:   "`visible_on_map`",
+		shipmentCodeCol:   "`shipment_code`",
+		shippingTypeIDCol: "`shipping_type_id`",
+		latColumn:         "`start_lat`",
+		lngColumn:         "`start_lng`",
+	}
+
+	haversineQuery, _ := mysqlDB.buildNearbyQuery(35.7, 51.4, 2, 50, 42)
+	if !strings.Contains(haversineQuery, "AND s.`user_id` <> 42") {
+		t.Fatalf("expected own-created shipment exclusion in Haversine path for user 42, got:\n%s", haversineQuery)
+	}
+}
+
+// TestShipmentNearbyQueryHidesUnreleasedShipment ensures a shipment scheduled to
+// publish later (release_time in the future) never appears in the nearby feed,
+// for both anonymous and authenticated requests, on both dialects.
+func TestShipmentNearbyQueryHidesUnreleasedShipment(t *testing.T) {
+	pgDB := &ShipmentDB{
+		dialect:           "postgres",
+		table:             `"shipments"`,
+		idColumn:          `"id"`,
+		visibleOnMapCol:   `"visible_on_map"`,
+		shipmentCodeCol:   `"shipment_code"`,
+		shippingTypeIDCol: `"shipping_type_id"`,
+		locationColumn:    `"start_location"`,
+	}
+
+	for _, passengerUserID := range []int64{0, 42} {
+		query, _ := pgDB.buildNearbyQuery(35.7, 51.4, 2, 50, passengerUserID)
+		if !strings.Contains(query, `AND (s."release_time" IS NULL OR s."release_time" <= NOW())`) {
+			t.Fatalf("expected release_time gate for passengerUserID=%d, got:\n%s", passengerUserID, query)
+		}
+	}
+
+	mysqlDB := &ShipmentDB{
+		dialect:           "mysql",
+		table:             "`shipments`",
+		idColumn:          "`id`",
+		visibleOnMapCol:   "`visible_on_map`",
+		shipmentCodeCol:   "`shipment_code`",
+		shippingTypeIDCol: "`shipping_type_id`",
+		latColumn:         "`start_lat`",
+		lngColumn:         "`start_lng`",
+	}
+
+	haversineQuery, _ := mysqlDB.buildNearbyQuery(35.7, 51.4, 2, 50, 0)
+	if !strings.Contains(haversineQuery, "AND (s.`release_time` IS NULL OR s.`release_time` <= NOW())") {
+		t.Fatalf("expected release_time gate in Haversine path, got:\n%s", haversineQuery)
+	}
+}
+
 // TestShipmentIdentifierValidation ensures malformed identifiers are rejected.
 func TestShipmentIdentifierValidation(t *testing.T) {
 	if _, err := quoteQualifiedIdentifier("mysql", "shipment;DROP"); err == nil {

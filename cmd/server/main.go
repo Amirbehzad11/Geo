@@ -133,6 +133,9 @@ func main() {
 	}
 	gpsH = gpsH.WithPresence(driverSvc)
 	driverH := handler.NewDriverHandler(driverSvc)
+	if shipmentDB != nil {
+		driverH = driverH.WithUserLocationACL(shipmentDB)
+	}
 	handler.ConfigureWebSocketOrigins(cfg.CORSAllowedOrigins)
 	wsH := handler.NewWSHandler(hub, cfg.WebSocketTripAuthEnabled)
 	if shipmentDB != nil {
@@ -209,11 +212,15 @@ func main() {
 	r.POST("/route", routeH.Calculate)
 	r.POST("/route/waypoints", multiRouteH.Calculate)
 	r.POST("/driver-location", driverH.UpdateLocation)
+	r.POST("/driver-location/offline", driverH.GoOffline)
 
 	gps := r.Group("/gps")
 	{
 		gps.POST("/update", gpsH.Update)
 		gps.GET("/trip/:id/location", gpsH.GetLocation)
+		// Positions are tracked per user, so followers read the passenger's
+		// own live location instead of a per-trip one.
+		gps.GET("/user/:id/location", driverH.GetUserLocation)
 	}
 
 	r.GET("/ws/trip/:id", wsH.HandleConnection)
