@@ -5,6 +5,16 @@
 *.test.exe
 data/*.osm.pbf
 data/*.osm
+data/
+*.pbf
+*.osm
+*.osm.pbf
 isfahan_roads.osm
 osm2graph*.exe
 osm2postgis.exe
+*.exe
+*.log
+tmp/
+dist/
+bin/
+coverage/
