@@ -16,10 +16,12 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 # ---- runtime stage ----
 FROM alpine:3.20
 
-RUN apk --no-cache add ca-certificates tzdata
-
 WORKDIR /app
 COPY --from=builder /app/geo-service .
+# The binary is statically linked. Copy the builder's CA bundle instead of
+# downloading Alpine packages during the image build (important on restricted
+# servers where dl-cdn.alpinelinux.org is slow or blocked).
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 8080
 ENTRYPOINT ["./geo-service"]
