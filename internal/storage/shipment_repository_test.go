@@ -32,9 +32,10 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	if !strings.Contains(query, `ST_DWithin`) {
 		t.Fatalf("expected ST_DWithin in PostGIS query, got:\n%s", query)
 	}
-	// Only ACCEPTED open packages, or the passenger's own in-progress shipping.
-	if !strings.Contains(query, `UPPER(nss."label") = 'ACCEPTED'`) {
-		t.Fatalf("expected ACCEPTED shipment status filter in PostGIS query, got:\n%s", query)
+	// Open map-visible statuses remain visible after the shipment advances past
+	// ACCEPTED; claimed packages are handled by the exclusion clauses below.
+	if !strings.Contains(query, `UPPER(nss."label") IN ('ACCEPTED', 'SHIPPING_ASK_PENDING', 'SHIPPING_PENDING_PAYMENT', 'SHIPPING_WAITING', 'SHIPPING_PICKEDUP', 'SHIPPING_MOVING')`) {
+		t.Fatalf("expected open shipment status filter in PostGIS query, got:\n%s", query)
 	}
 	// Shipments with active shipping or ACCEPTED shipping_ask stay off the map.
 	if !strings.Contains(query, `FROM "shippings" AS sh`) {
@@ -207,8 +208,8 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	if strings.Contains(query, "$1") {
 		t.Fatalf("MySQL query must not contain postgres placeholders: %s", query)
 	}
-	if !strings.Contains(query, "UPPER(nss.`label`) = 'ACCEPTED'") {
-		t.Fatalf("expected ACCEPTED shipment status filter in MySQL query, got:\n%s", query)
+	if !strings.Contains(query, "UPPER(nss.`label`) IN ('ACCEPTED', 'SHIPPING_ASK_PENDING', 'SHIPPING_PENDING_PAYMENT', 'SHIPPING_WAITING', 'SHIPPING_PICKEDUP', 'SHIPPING_MOVING')") {
+		t.Fatalf("expected open shipment status filter in MySQL query, got:\n%s", query)
 	}
 	if !strings.Contains(query, "FROM `shippings` AS sh") {
 		t.Fatalf("expected active shipping exclusion in MySQL query, got:\n%s", query)

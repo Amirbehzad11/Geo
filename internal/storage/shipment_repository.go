@@ -819,11 +819,13 @@ func excludedShippingStatusLabelsSQL() string {
 	return "'" + strings.Join(excludedShippingStatusLabels, "','") + "'"
 }
 
-// nearbyStatusEligibilityFilter keeps open ACCEPTED packages visible to everyone,
-// and also keeps the authenticated passenger's own in-progress shipping
-// (e.g. PENDING_PAYMENT / WAITING) visible so they can continue on the map.
-// Other passengers still cannot see claimed packages because status leaves ACCEPTED
-// and the own-shipping clause is scoped to passengerUserID.
+// nearbyStatusEligibilityFilter keeps map-visible packages in the open part of
+// the shipment lifecycle visible after their status changes. Previously this
+// only allowed ACCEPTED, which made a package disappear as soon as its status
+// moved to SHIPPING_ASK_PENDING / SHIPPING_WAITING / SHIPPING_PICKEDUP or
+// SHIPPING_MOVING. Claimed packages are still removed by nearbyMapExcludeFilters;
+// the own-shipping clause keeps the authenticated passenger's package visible
+// so navigation can be resumed.
 func (s *ShipmentDB) nearbyStatusEligibilityFilter(shipmentAlias string, passengerUserID int64) string {
 	statusesTable, err := quoteQualifiedIdentifier(s.dialect, "shipment_statuses")
 	if err != nil {
@@ -849,11 +851,11 @@ func (s *ShipmentDB) nearbyStatusEligibilityFilter(shipmentAlias string, passeng
 	tripIDCol, _ := quoteIdentifier(s.dialect, "trip_id")
 	userIDCol, _ := quoteIdentifier(s.dialect, "user_id")
 
-	acceptedClause := fmt.Sprintf(`EXISTS (
+	mapEligibleClause := fmt.Sprintf(`EXISTS (
     SELECT 1
     FROM %s AS nss
     WHERE nss.%s = %s.%s
-      AND UPPER(nss.%s) = 'ACCEPTED'
+      AND UPPER(nss.%s) IN ('ACCEPTED', 'SHIPPING_ASK_PENDING', 'SHIPPING_PENDING_PAYMENT', 'SHIPPING_WAITING', 'SHIPPING_PICKEDUP', 'SHIPPING_MOVING')
 )`,
 		statusesTable,
 		idCol,
@@ -863,7 +865,7 @@ func (s *ShipmentDB) nearbyStatusEligibilityFilter(shipmentAlias string, passeng
 	)
 
 	if passengerUserID <= 0 {
-		return acceptedClause
+		return mapEligibleClause
 	}
 
 	ownShippingClause := fmt.Sprintf(`EXISTS (
@@ -891,7 +893,7 @@ func (s *ShipmentDB) nearbyStatusEligibilityFilter(shipmentAlias string, passeng
 		excludedShippingStatusLabelsSQL(),
 	)
 
-	return acceptedClause + "\n  OR " + ownShippingClause
+	return mapEligibleClause + "\n  OR " + ownShippingClause
 }
 
 // nearbyMapExcludeFilters hides shipments that already have an active shipping
