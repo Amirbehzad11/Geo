@@ -775,7 +775,9 @@ func (s *ShipmentDB) buildNearbyQueryPostGIS(lat, lng, radiusKm float64, limit i
 	}
 
 	shipmentRef := "s." + s.idColumn
-	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID) + s.nearbyReleaseTimeFilter("s")
+	mapExcludeFilters := s.nearbyMapVisibilityFilter("s") +
+		s.nearbyMapExcludeFilters(shipmentRef, passengerUserID) +
+		s.nearbyReleaseTimeFilter("s")
 	statusFilter := s.nearbyStatusEligibilityFilter("s", passengerUserID)
 
 	query := fmt.Sprintf(`
@@ -793,21 +795,21 @@ WHERE %[1]s IS NOT NULL
   AND ST_DWithin(%[1]s::geography, ST_MakePoint($2, $1)::geography, $3)%[15]s
 ORDER BY distance_km ASC
 LIMIT $4`,
-		locCol,                    // [1]
-		endCols,                   // [2]
-		s.table,                   // [3]
-		s.contentImageSelect,      // [4]
-		contentJoin,               // [5]
-		statusFilter,              // [6]
-		s.idColumn,                // [7]
+		locCol,                       // [1]
+		endCols,                      // [2]
+		s.table,                      // [3]
+		s.contentImageSelect,         // [4]
+		contentJoin,                  // [5]
+		statusFilter,                 // [6]
+		s.idColumn,                   // [7]
 		s.vehicleAllowedSelectExpr(), // [8]
-		s.shipmentImagesSelect,    // [9]
-		s.visibleOnMapCol,         // [10]
-		s.shipmentCodeCol,         // [11]
-		s.shippingTypeIDCol,       // [12]
-		s.packageDetailSelect,     // [13]
-		detailJoins,               // [14]
-		mapExcludeFilters,         // [15]
+		s.shipmentImagesSelect,       // [9]
+		s.visibleOnMapCol,            // [10]
+		s.shipmentCodeCol,            // [11]
+		s.shippingTypeIDCol,          // [12]
+		s.packageDetailSelect,        // [13]
+		detailJoins,                  // [14]
+		mapExcludeFilters,            // [15]
 	)
 
 	return query, args
@@ -905,6 +907,17 @@ func (s *ShipmentDB) nearbyMapExcludeFilters(shipmentRef string, passengerUserID
 		s.buildAcceptedShippingAskExistsClause(shipmentRef, passengerUserID),
 		s.nearbyOwnCreatedExcludeFilter(passengerUserID),
 	)
+}
+
+// nearbyMapVisibilityFilter keeps the map feed server-authoritative. The
+// frontend must not decide whether a shipment is eligible for map display.
+func (s *ShipmentDB) nearbyMapVisibilityFilter(shipmentAlias string) string {
+	if s.dialect == "postgres" {
+		return fmt.Sprintf(`
+  AND %s.%s IS TRUE`, shipmentAlias, s.visibleOnMapCol)
+	}
+	return fmt.Sprintf(`
+  AND %s.%s = 1`, shipmentAlias, s.visibleOnMapCol)
 }
 
 // nearbyOwnCreatedExcludeFilter hides shipments the requesting passenger created
@@ -1058,7 +1071,9 @@ func (s *ShipmentDB) buildNearbyQueryHaversine(lat, lng, radiusKm float64, limit
 
 	minLat, maxLat, minLng, maxLng := shipmentBoundingBox(lat, lng, radiusKm)
 	shipmentRef := "s." + s.idColumn
-	mapExcludeFilters := s.nearbyMapExcludeFilters(shipmentRef, passengerUserID) + s.nearbyReleaseTimeFilter("s")
+	mapExcludeFilters := s.nearbyMapVisibilityFilter("s") +
+		s.nearbyMapExcludeFilters(shipmentRef, passengerUserID) +
+		s.nearbyReleaseTimeFilter("s")
 	statusFilter := s.nearbyStatusEligibilityFilter("s", passengerUserID)
 	query := fmt.Sprintf(`
 SELECT *

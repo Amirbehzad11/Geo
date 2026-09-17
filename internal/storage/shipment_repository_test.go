@@ -70,6 +70,9 @@ func TestShipmentNearbyQueryPostGIS(t *testing.T) {
 	if !strings.Contains(query, `AS visible_on_map`) {
 		t.Fatalf("expected visible_on_map column in PostGIS query, got:\n%s", query)
 	}
+	if !strings.Contains(query, `AND s."visible_on_map" IS TRUE`) {
+		t.Fatalf("expected server-side visible_on_map filter in PostGIS query, got:\n%s", query)
+	}
 	if !strings.Contains(query, `AS shipment_code`) {
 		t.Fatalf("expected shipment_code column in PostGIS query, got:\n%s", query)
 	}
@@ -218,6 +221,9 @@ func TestShipmentNearbyQueryMySQL(t *testing.T) {
 	}
 	if !strings.Contains(query, "AS visible_on_map") {
 		t.Fatalf("expected visible_on_map column in MySQL query, got:\n%s", query)
+	}
+	if !strings.Contains(query, "AND s.`visible_on_map` = 1") {
+		t.Fatalf("expected server-side visible_on_map filter in MySQL query, got:\n%s", query)
 	}
 	if !strings.Contains(query, "AS shipment_code") {
 		t.Fatalf("expected shipment_code column in MySQL query, got:\n%s", query)
